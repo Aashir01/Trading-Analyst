@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+
+# Local data, cached market history, trained models
+data/
+*.db
+*.db-wal
+*.db-shm
+*.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

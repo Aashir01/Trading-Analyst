@@ -1,0 +1,9 @@
+# Normalise line endings in the repository so the project clones cleanly on
+# Linux and macOS as well as Windows.
+* text=auto eol=lf
+
+# Binary assets, never touched.
+*.png binary
+*.jpg binary
+*.pkl binary
+*.db binary

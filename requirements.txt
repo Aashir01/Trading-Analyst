@@ -1,0 +1,33 @@
+# --- Core numeric / data ---
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+statsmodels>=0.14
+scikit-learn>=1.3
+
+# --- Storage ---
+SQLAlchemy>=2.0
+# Optional: TimescaleDB / PostgreSQL backend (pip install separately if used)
+# psycopg2-binary>=2.9
+
+# --- Config / plumbing ---
+pydantic>=2.5
+pydantic-settings>=2.1
+python-dotenv>=1.0
+PyYAML>=6.0
+requests>=2.31
+rich>=13.0
+typer>=0.9
+
+# --- Interfaces ---
+streamlit>=1.50
+plotly>=5.18
+# Optional: REST API
+# fastapi>=0.110
+# uvicorn>=0.27
+# Optional: Telegram alerts
+# python-telegram-bot>=21.0
+
+# NOTE: TA-Lib is deliberately NOT required. All indicators are implemented
+# in mfie/technical/indicators.py with numpy/pandas so the project installs
+# on Windows without a C toolchain. See README "Why not TA-Lib".

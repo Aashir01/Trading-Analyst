@@ -1,0 +1,113 @@
+# Econometric parameters — the behaviour of the engine lives here.
+#
+# These are NOT secrets; they belong in version control so that a change in
+# behaviour shows up in a diff. Every value overrides the dataclass default in
+# mfie/config.py. Anything you omit keeps its default.
+#
+# Treat these as hypotheses to be backtested, not as truths. Run
+#   python -m mfie backtest EURUSD --compare
+# after changing a threshold to see whether the filter is earning its keep.
+
+liquidity:
+  # ΔGLI = w1 * %change(M2) + w2 * %change(stablecoin supply)
+  m2_weight: 0.6                 # fiat leg — dominant for forex
+  stablecoin_weight: 0.4         # crypto-native leg
+  lookback_days: 90              # n in the formula
+  contraction_threshold: 0.0     # ΔGLI below this => contraction regime
+  contraction_penalty: 0.5       # multiplier on momentum longs at full severity
+  strong_expansion_threshold: 0.02
+
+yields:
+  inversion_threshold: 0.0       # 10Y-2Y <= 0 => CONTRACTION
+  steepening_threshold: 0.005
+  contraction_penalty: 0.6
+  block_high_beta_on_inversion: true   # hard block on altcoin / carry-currency longs
+
+rird:
+  # Real Interest Rate Differential: (I_A - pi_A) - (I_B - pi_B)
+  significant_differential: 0.01       # 100 bps before it means anything
+  aligned_bonus: 1.15
+  opposed_penalty: 0.65
+  hard_block_differential: 0.03        # 300 bps against the trade => block
+
+ppp:
+  lookback_periods: 250          # REER observations for the z-score
+  overvalued_z: 2.0
+  stretched_z: 1.5
+  penalty: 0.5
+  block_breakouts_beyond_z: 2.5
+
+esi:
+  decay_lambda: 0.05             # e^{-lambda * days}; ~14-day half-life
+  window_days: 90
+  significant_delta: 1.0
+  aligned_bonus: 1.10
+  opposed_penalty: 0.80
+
+tokenomics:
+  velocity_lookback: 90
+  velocity_z_warning: -1.5       # V below mean - 1.5 sigma => hoarding
+  nvt_lookback: 90
+  nvt_z_overvalued: 2.0
+  divergence_penalty: 0.55
+  nvt_penalty: 0.7
+
+microstructure:
+  atr_period: 14
+  friction_warn: 0.10            # LF = spread / ATR
+  friction_halt: 0.30
+  widen_stops: true
+  max_stop_multiplier: 2.5
+
+behavioral:
+  contrarian_k: 2.0              # exponent in C_t = 1 - |(%long - 0.5)/0.5|^k
+  extreme_threshold: 0.85
+  fear_greed_extreme_greed: 80.0
+  fear_greed_extreme_fear: 20.0
+  fear_greed_penalty: 0.75
+
+events:
+  blackout_minutes_before: 30
+  blackout_minutes_after: 30
+  medium_impact_penalty: 0.8
+
+risk:
+  account_equity: 10000.0
+  base_risk_per_trade: 0.01      # 1% of equity at the stop
+  max_risk_per_trade: 0.02
+  max_portfolio_risk: 0.06       # total heat across open positions
+  cvar_alpha: 0.95
+  cvar_lookback: 250
+  cvar_budget: 0.035             # daily CVaR95 budget, as a fraction of equity
+  cvar_breach_scaler: 0.5
+  # Portfolio-level annualised volatility target. Applied per position, so a
+  # 65%-vol crypto pair is sized far smaller than a 9%-vol FX pair. Raise this
+  # if you run a crypto-only book and the sizes come out too small.
+  target_annual_vol: 0.15
+  kelly_fraction_cap: 0.25       # quarter-Kelly ceiling
+  min_confidence_to_trade: 0.35
+  atr_stop_multiple: 2.0
+  reward_risk_target: 2.0
+
+technical:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  bb_period: 20
+  bb_std: 2.0
+  atr_period: 14
+  adx_period: 14
+  ema_fast: 20
+  ema_slow: 50
+  ema_trend: 200
+  donchian_period: 20
+  zscore_period: 20
+
+regime:
+  vol_lookback: 60
+  trend_lookback: 60
+  high_vol_percentile: 0.75
+  low_vol_percentile: 0.35
+  adx_trending: 25.0
+  hmm_states: 3
