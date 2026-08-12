@@ -2,8 +2,9 @@
 
     python -m mfie dashboard        (or: streamlit run mfie/interfaces/dashboard.py)
 
-Five tabs: Signals, Macro, Charts, Backtest, Data sources. Every chart carries a
-legend and a matching table view, so nothing depends on colour alone.
+Six tabs: Signals, Cycle, Macro, Charts, Backtest, Data sources. Every chart
+carries a legend or title naming its series and a matching table view, so
+nothing depends on colour alone.
 """
 
 from __future__ import annotations
@@ -177,6 +178,75 @@ def filter_impact_chart(signal) -> go.Figure:
     )
     layout = base_layout(PALETTE, height=max(240, 34 * len(rows)),
                          title="Filter impact on confidence")
+    layout["showlegend"] = False
+    layout["hovermode"] = "closest"
+    layout["xaxis"]["zeroline"] = True
+    layout["xaxis"]["zerolinecolor"] = PALETTE.axis
+    fig.update_layout(**{k: v for k, v in layout.items() if v is not None})
+    return fig
+
+
+def cycle_chart(history: pd.DataFrame, params, title: str) -> go.Figure:
+    """Composite cycle score over time.
+
+    One series, so no legend box — the title names it. The reference lines carry
+    the thresholds that drive the state machine, so the reader can see *why* a
+    phase changed where it did rather than being told.
+    """
+    fig = go.Figure(
+        go.Scatter(
+            x=history.index, y=history["cycle"], mode="lines", name="Cycle score",
+            line=line_style(PALETTE, 0),
+            hovertemplate="%{x|%Y-%m-%d}<br>score %{y:+.3f}<extra></extra>",
+        )
+    )
+    for level, label, colour in (
+        (params.bull_entry, "Bull entry", PALETTE.good),
+        (0.0, "", PALETTE.axis),
+        (params.bear_entry, "Bear entry", PALETTE.critical),
+    ):
+        fig.add_hline(
+            y=level,
+            line=dict(color=colour, width=1, dash="dot" if label else "solid"),
+            annotation_text=label,
+            annotation_position="right",
+            annotation_font=dict(color=PALETTE.ink_muted, size=10),
+        )
+    layout = base_layout(PALETTE, height=340, title=title)
+    layout["showlegend"] = False
+    layout["yaxis"]["range"] = [-1.05, 1.05]
+    fig.update_layout(**{k: v for k, v in layout.items() if v is not None})
+    return fig
+
+
+def factor_contribution_chart(state) -> go.Figure:
+    """Diverging bars: how much each factor pushes the composite, and which way."""
+    readings = list(reversed(state.readings))
+    if not readings:
+        return go.Figure()
+
+    values = [r.contribution for r in readings]
+    colours = [PALETTE.diverging_high if v >= 0 else PALETTE.diverging_low for v in values]
+    hover = [
+        f"score {r.score:+.2f} · weight {r.weight:.0%} · lead ~{r.lead_days}d"
+        f"{'' if r.trusted else ' (prior weight)'}"
+        for r in readings
+    ]
+
+    fig = go.Figure(
+        go.Bar(
+            x=values, y=[r.label for r in readings], orientation="h",
+            marker=dict(color=colours, line=dict(color=PALETTE.surface, width=2)),
+            customdata=hover,
+            hovertemplate="<b>%{y}</b><br>contribution %{x:+.3f}<br>%{customdata}<extra></extra>",
+            text=[f"{v:+.3f}" for v in values],
+            textposition="outside",
+            textfont=dict(color=PALETTE.ink_secondary, size=11),
+            name="Contribution",
+        )
+    )
+    layout = base_layout(PALETTE, height=max(280, 38 * len(readings)),
+                         title="What is driving the cycle score")
     layout["showlegend"] = False
     layout["hovermode"] = "closest"
     layout["xaxis"]["zeroline"] = True
@@ -436,6 +506,98 @@ def tab_macro(result) -> None:
         )
 
 
+def tab_cycle(result) -> None:
+    """Market Cycle Compass — the leading bull/bear read."""
+    states = result.macro.cycle_states
+    if not states:
+        st.info("The cycle compass did not run for this selection.")
+        return
+
+    params = get_params().cycle
+    st.caption(
+        "A composite of liquidity, credit, real rates, breadth, valuation and "
+        "positioning — each entering as an impulse, weighted by its measured "
+        "lead over price, and shrunk toward its economic prior when the data "
+        "cannot justify more."
+    )
+
+    for domain, state in states.items():
+        st.subheader(f"{domain.upper()} — {state.phase.label}")
+
+        colour = status_color(
+            PALETTE,
+            {"expansion": "good", "early_recovery": "good",
+             "late_expansion": "warning", "contraction": "critical",
+             "neutral": "serious"}[state.phase.value],
+        )
+        st.markdown(
+            f"<div style='height:3px;background:{colour};border-radius:2px;"
+            "margin:2px 0 14px 0'></div>",
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns(5)
+        cols[0].metric("Cycle score", f"{state.score:+.2f}",
+                       f"{state.momentum:+.2f} momentum")
+        cols[1].metric("Bias", state.bias)
+        cols[2].metric("Days in phase", state.days_in_phase)
+        cols[3].metric("P(phase change)", f"{state.transition_probability:.0%}",
+                       f"within {params.hazard_horizon}d")
+        cols[4].metric("Confidence", f"{state.confidence:.0%}", state.data_quality)
+
+        st.info(f"**{state.phase.label}** — {state.phase.stance}")
+
+        if state.divergence_flag:
+            message = (
+                f"Bearish divergence ({state.divergence:+.2f} sd): price is rising while "
+                "macro internals deteriorate — the distribution signature."
+                if state.divergence < 0 else
+                f"Bullish divergence ({state.divergence:+.2f} sd): internals improving while "
+                "price still falls — historically an accumulation window."
+            )
+            (st.warning if state.divergence < 0 else st.success)(message)
+
+        if state.history is not None and not state.history.empty:
+            st.plotly_chart(
+                cycle_chart(state.history, params, f"{domain.upper()} cycle score"),
+                width="stretch",
+            )
+
+        left, right = st.columns([3, 2])
+        with left:
+            st.plotly_chart(factor_contribution_chart(state), width="stretch")
+        with right:
+            # Table view of the same numbers: the accessible alternative to
+            # reading the bars, and the relief rule for low-contrast slots.
+            st.markdown("**Factors**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Factor": r.label,
+                            "Score": round(r.score, 3),
+                            "Weight": f"{r.weight:.0%}",
+                            "Contribution": round(r.contribution, 4),
+                            "Lead (d)": r.lead_days,
+                            "Weight source": "measured" if r.trusted else "prior",
+                        }
+                        for r in state.readings
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+
+        with st.expander(f"Why — {domain} narrative and factor rationale"):
+            for line in state.narrative:
+                st.markdown(f"- {line}")
+            st.markdown("---")
+            for reading in state.readings:
+                st.markdown(f"**{reading.label}** — {reading.rationale}")
+
+        st.divider()
+
+
 def tab_charts(result, config: dict) -> None:
     symbols = list(result.analyses)
     if not symbols:
@@ -591,16 +753,18 @@ def main() -> None:
     with st.spinner("Building macro context and scanning..."):
         result = run_analysis(config["symbols"], config["timeframe"], config["limit"])
 
-    tabs = st.tabs(["Signals", "Macro", "Charts", "Backtest", "Data sources"])
+    tabs = st.tabs(["Signals", "Cycle", "Macro", "Charts", "Backtest", "Data sources"])
     with tabs[0]:
         tab_signals(result)
     with tabs[1]:
-        tab_macro(result)
+        tab_cycle(result)
     with tabs[2]:
-        tab_charts(result, config)
+        tab_macro(result)
     with tabs[3]:
-        tab_backtest(config)
+        tab_charts(result, config)
     with tabs[4]:
+        tab_backtest(config)
+    with tabs[5]:
         tab_sources(result)
 
     st.divider()

@@ -100,6 +100,84 @@ volatility · Hurst exponent · swing structure · RSI divergence.
 Strategies know nothing about macro, sizing or the account. They propose; the
 pipeline disposes.
 
+### 4b. The Market Cycle Compass — the leading bull/bear engine
+
+Everything else in this project judges *a trade*. This judges *the tide*:
+whether the market is heading into a bull or bear phase over the next quarter.
+It lives in [mfie/alpha/](mfie/alpha/) and runs as `python -m mfie cycle`.
+
+Seven factors, each normalised to `[-1, +1]` where positive always means
+risk-on, combined into one score and mapped to a four-phase cycle:
+
+```
+EARLY_RECOVERY  ──►  EXPANSION  ──►  LATE_EXPANSION  ──►  CONTRACTION
+      ▲                                                        │
+      └────────────────────────────────────────────────────────┘
+```
+
+| Factor | Prior weight | Typical lead | What it measures |
+|---|---|---|---|
+| Liquidity impulse | 26% | ~90d | *Acceleration* of M2 and stablecoin supply |
+| Credit / curve regime | 20% | ~120d | Curve shape **and** direction (see below) |
+| Real rate impulse | 16% | ~60d | Direction of the real policy rate |
+| Participation breadth | 14% | ~21d | Share of the universe in an uptrend |
+| Valuation stretch | 10% | ~120d | NVT (crypto) / REER (FX) |
+| Positioning | 8% | ~10d | Funding + Fear & Greed; havens for FX |
+| Trend confirmation | 6% | 0d | Deliberately lagging, deliberately small |
+
+Five design decisions do the real work:
+
+**1. Impulses, not levels.** Every macro factor enters as a rate of change or an
+acceleration. The *level* of M2 tells you nothing — the second derivative of
+liquidity turns before risk assets do.
+
+**2. The credit factor is non-monotonic.** Almost every model treats an
+inverting curve as *the* bear signal. Historically that is early by a year or
+more and markets melt up through the inversion. The real trigger is the **bull
+steepener** — the curve un-inverting from below, because the front end is
+collapsing as the market prices cuts, and cuts get priced when something breaks.
+
+| Curve state | Cycle phase | Score |
+|---|---|---|
+| Positive and steepening | early recovery | **+1.0** |
+| Positive and flattening | mid expansion | +0.3 |
+| Inverted and flattening | late cycle, melt-up | −0.2 |
+| **Inverted and steepening** | **the trigger** | **−1.0** |
+
+A curve that has recently crossed back above zero keeps the −1.0 for a year.
+
+**3. Lead-aligned aggregation.** A 90-day-lead factor read today describes a
+point three months out; a 10-day factor describes next fortnight. Averaging them
+raw blurs both. Slow factors are *delayed* — the 90-day factor is read as it
+stood 80 days ago — so all of them speak to one forecast horizon.
+
+**4. Shrinkage toward priors, and no sign flipping.** Measured weights are
+blended toward the economic priors in proportion to statistical significance,
+and clamped to at most 2× their prior. If a factor measures with the **wrong
+sign**, the engine falls back to the prior and says so, rather than flipping the
+sign and fitting noise — the standard way composite indicators die.
+
+**5. Overlap-corrected statistics.** 700 daily readings of a 63-day forward
+return are ~11 independent observations, not 700. During development a factor
+scored t = −7.3 uncorrected and t ≈ −0.9 corrected. Every "leading indicator"
+that fails out of sample has some version of this mistake in it.
+
+Output is a phase, a score, a per-factor breakdown, an empirical probability of
+leaving the phase, and a **divergence flag** — price making highs while the
+internals deteriorate, the distribution signature. Two configurations are hard
+blocks in the filter chain: a high-beta long into `CONTRACTION`, and any long
+into `LATE_EXPANSION` while the divergence flag is up.
+
+```bash
+python -m mfie cycle --domain both --validate
+```
+
+`--validate` measures whether the composite actually predicts returns on your
+data and reports the information coefficient per factor per lead. On the
+built-in synthetic data it correctly reports **NO MEASURABLE EDGE** — the macro
+and price fixtures are independent, so there is nothing to find, and a model
+that claimed otherwise would be lying to you.
+
 ### 5. The econometric filter chain
 
 This is the part that makes it an *economist's* tool rather than another
@@ -109,6 +187,7 @@ to trade than when to.
 
 | Level | Filter | Rule |
 |---|---|---|
+| 1 | **Market Cycle** | Phase alignment from the Compass. Hard-blocks high-beta longs in `CONTRACTION` and longs into `LATE_EXPANSION` with divergence |
 | 1 | Global Liquidity | ΔGLI = w₁·%ΔM2 + w₂·%Δstablecoins. Contraction penalises momentum longs, scaled by severity |
 | 1 | Yield Curve | 10Y−2Y ≤ 0 ⇒ CONTRACTION. Blocks high-beta longs, penalises the rest |
 | 2 | Event Blocker | Hard block ±30 min around a high-impact release (USD events reach crypto too) |
@@ -150,6 +229,7 @@ python -m mfie analyze  --symbols EURUSD,BTCUSDT --timeframe 4h --audit
 python -m mfie analyze  --class crypto --json          # machine-readable
 python -m mfie watch                                   # one line per instrument
 python -m mfie macro    --verbose                      # rates, curves, calendar
+python -m mfie cycle    --domain both --validate        # bull/bear cycle read
 python -m mfie backtest EURUSD --bars 3000 --compare   # with vs without filters
 python -m mfie pairs    --class crypto                 # cointegration scan
 python -m mfie train    BTCUSDT --algorithm random_forest
@@ -174,6 +254,7 @@ mfie/
 ├── technical/           Indicator library (pure pandas/numpy)
 ├── econ/                liquidity · rates · valuation · surprise ·
 │                        tokenomics · microstructure · behavioral · risk
+├── alpha/               Market Cycle Compass: factors, lead-lag, cycle engine
 ├── regime/              Rule-based + Gaussian-mixture regime detection
 ├── strategies/          The strategy library and its registry
 ├── ml/                  Feature engineering + walk-forward direction model
@@ -183,7 +264,7 @@ mfie/
 └── cli.py               Typer CLI
 
 config/params.yaml       Every econometric threshold, version-controlled
-tests/                   113 tests: formulas, causality, filter behaviour, risk
+tests/                   163 tests: formulas, causality, filter behaviour, risk, cycle
 ```
 
 ---
@@ -214,7 +295,7 @@ Two settings people usually want to change first:
 ## Testing
 
 ```bash
-python -m pytest tests -q          # 113 tests, ~13s
+python -m pytest tests -q          # 163 tests, ~1m45s
 ```
 
 The suite pins the mathematics (CVaR ≥ VaR, Kelly = p − (1−p)/b, RIRD
@@ -240,6 +321,9 @@ Stated plainly, because a tool that hides these is worse than no tool:
   false positives by construction.
 * **The backtester does not model** partial fills, funding on leveraged
   positions, borrow costs, exchange outages, or your own market impact.
+* **The Cycle Compass needs history to be worth anything.** With under 250
+  daily observations it uses the economic priors unchanged and measures nothing.
+  It wants years of FRED data, not weeks.
 * **Retail positioning is only real with an OANDA key.** Without it the
   behavioural filter is running on simulated data.
 * **The ML model is opt-in and self-rejecting.** If walk-forward accuracy does

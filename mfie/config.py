@@ -240,6 +240,66 @@ class RegimeParams:
 
 
 @dataclass
+class CycleParams:
+    """Parameters for the Market Cycle Compass (``mfie.alpha``).
+
+    This block is the closest thing the project has to proprietary IP. The
+    formulas are public knowledge; the *weights, lead windows and thresholds
+    calibrated on your own data* are not. Keep this section private if that
+    matters to you.
+    """
+
+    history_days: int = 720
+    zscore_window: int = 365
+    smoothing_days: int = 5
+    impulse_window: int = 63        # ~3 months: the derivative window
+    real_rate_window: int = 126     # ~6 months: policy works with a long lag
+    breadth_ma: int = 50
+
+    # Economic priors on each factor's weight. These are the fallback when the
+    # data cannot justify a different weighting, and the starting point for
+    # calibration. They must sum to 1 (they are renormalised if not).
+    prior_weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "liquidity_impulse": 0.26,
+            "credit_regime": 0.20,
+            "real_rate_impulse": 0.16,
+            "breadth": 0.14,
+            "valuation": 0.10,
+            "risk_appetite": 0.08,
+            "trend_confirmation": 0.06,
+        }
+    )
+
+    # Lead-lag search
+    max_lead_days: int = 120
+    lead_step_days: int = 10
+    forward_horizon: int = 63       # the return window each factor is scored against
+    min_observations: int = 250
+    align_leads: bool = True        # speak to a common forecast horizon
+    min_tstat: float = 2.0          # below this, trust the prior instead
+
+    # A measured weight may never stray far from its prior. Without this, one
+    # factor that happens to fit the sample takes over the composite and the
+    # economic reasoning behind the priors is quietly discarded.
+    max_weight_multiple: float = 2.0
+    min_weight_multiple: float = 0.4
+
+    # State machine — asymmetric on purpose: bulls die slowly, bears start fast.
+    bull_entry: float = 0.25
+    bull_exit: float = -0.05
+    bear_entry: float = -0.25
+    bear_exit: float = 0.10
+    confirm_days: int = 5
+
+    # Divergence (price rising while internals deteriorate)
+    divergence_window: int = 63
+    divergence_threshold: float = 1.0
+
+    hazard_horizon: int = 63
+
+
+@dataclass
 class Params:
     liquidity: LiquidityParams = field(default_factory=LiquidityParams)
     yields: YieldParams = field(default_factory=YieldParams)
@@ -253,6 +313,7 @@ class Params:
     risk: RiskParams = field(default_factory=RiskParams)
     technical: TechnicalParams = field(default_factory=TechnicalParams)
     regime: RegimeParams = field(default_factory=RegimeParams)
+    cycle: CycleParams = field(default_factory=CycleParams)
 
 
 def _apply_overrides(obj: Any, overrides: dict[str, Any]) -> None:

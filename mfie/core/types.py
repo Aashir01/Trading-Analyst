@@ -183,6 +183,10 @@ class MacroContext:
     # Calendar
     events: list[EconomicEvent] = field(default_factory=list)
 
+    # Market Cycle Compass state, keyed by domain ("crypto" / "fx").
+    # Typed as Any to keep mfie.core free of a dependency on mfie.alpha.
+    cycle_states: dict[str, Any] = field(default_factory=dict)
+
     # Portfolio risk state
     portfolio_cvar: float | None = None
     portfolio_sortino: float | None = None

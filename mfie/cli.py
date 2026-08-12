@@ -163,6 +163,68 @@ def macro(
 
 
 @app.command()
+def cycle(
+    domain: str = typer.Option("both", "--domain", "-d", help="crypto | fx | both"),
+    validate: bool = typer.Option(False, "--validate",
+                                  help="Measure whether the composite actually predicts returns"),
+    factors: bool = typer.Option(True, "--factors/--no-factors", help="Show the factor breakdown"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Market Cycle Compass — the leading bull/bear state read."""
+    from mfie.alpha.cycle import CycleEngine
+
+    engine = CycleEngine()
+    domains = ["crypto", "fx"] if domain == "both" else [domain]
+
+    payload = {}
+    for name in domains:
+        with console.status(f"Building the {name} cycle panel..."):
+            state = engine.evaluate(name)
+
+        if as_json:
+            payload[name] = state.as_dict()
+            continue
+
+        colour = {
+            "expansion": "green", "early_recovery": "cyan",
+            "late_expansion": "yellow", "contraction": "red", "neutral": "white",
+        }[state.phase.value]
+
+        console.print(
+            Panel(
+                "\n".join(state.narrative),
+                title=f"[{colour}]{name.upper()} — {state.phase.label}  "
+                      f"({state.score:+.2f})[/{colour}]",
+                subtitle=f"confidence {state.confidence:.0%} · data {state.data_quality}",
+            )
+        )
+
+        if factors and state.readings:
+            table = Table(title="Factor breakdown")
+            for column in ("Factor", "Score", "Weight", "Contribution", "Lead", "Trusted"):
+                table.add_column(column, justify="right" if column != "Factor" else "left")
+            for reading in state.readings:
+                bar_colour = "green" if reading.score > 0 else "red"
+                table.add_row(
+                    reading.label,
+                    f"[{bar_colour}]{reading.score:+.2f}[/{bar_colour}]",
+                    f"{reading.weight:.0%}",
+                    f"{reading.contribution:+.3f}",
+                    f"{reading.lead_days}d",
+                    "yes" if reading.trusted else "prior",
+                )
+            console.print(table)
+
+        if validate:
+            report = engine.validate(name)
+            console.print(Panel("\n".join(report.lines()),
+                                title=f"Validation — {name}"))
+
+    if as_json:
+        console.print_json(json.dumps(payload, default=str))
+
+
+@app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="e.g. EURUSD or BTCUSDT"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t"),

@@ -104,6 +104,55 @@ technical:
   donchian_period: 20
   zscore_period: 20
 
+# ---------------------------------------------------------------------------
+# Market Cycle Compass (mfie/alpha) — the leading bull/bear engine.
+#
+# This block is the closest thing here to proprietary IP. The formulas are
+# public; these weights, lead windows and thresholds, calibrated on YOUR data,
+# are not. If secrecy matters, keep this file out of a public repository.
+# ---------------------------------------------------------------------------
+cycle:
+  history_days: 720
+  zscore_window: 365
+  smoothing_days: 5
+  impulse_window: 63          # ~3 months — the derivative window
+  real_rate_window: 126       # ~6 months — policy works with a long lag
+  breadth_ma: 50
+
+  # Economic priors. Renormalised to sum to 1. These are the fallback whenever
+  # the data cannot justify a different weighting — which, on a short history,
+  # is most of the time, and correctly so.
+  prior_weights:
+    liquidity_impulse: 0.26   # acceleration of money — the longest lead
+    credit_regime: 0.20       # curve shape AND direction
+    real_rate_impulse: 0.16   # direction of the real policy rate
+    breadth: 0.14             # participation
+    valuation: 0.10           # slow anchor, poor timing tool
+    risk_appetite: 0.08       # contrarian positioning
+    trend_confirmation: 0.06  # lagging confirmer, deliberately small
+
+  # Lead-lag search
+  max_lead_days: 120
+  lead_step_days: 10
+  forward_horizon: 63         # the return window each factor is scored against
+  min_observations: 250
+  align_leads: true           # make all factors speak to one forecast horizon
+  min_tstat: 2.0              # below this, trust the prior instead
+  max_weight_multiple: 2.0    # a measured weight may not run away from its prior
+  min_weight_multiple: 0.4
+
+  # State machine. Asymmetric on purpose: bull markets die slowly, bears start
+  # fast, so leaving a bull needs a lower bar than entering one.
+  bull_entry: 0.25
+  bull_exit: -0.05
+  bear_entry: -0.25
+  bear_exit: 0.10
+  confirm_days: 5             # a new phase must persist before it is accepted
+
+  divergence_window: 63
+  divergence_threshold: 1.0   # standard deviations of price/macro disagreement
+  hazard_horizon: 63
+
 regime:
   vol_lookback: 60
   trend_lookback: 60

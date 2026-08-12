@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from mfie.alpha.cycle import CyclePhase
 from mfie.config import Params, get_params
 from mfie.core.types import (
     Direction,
@@ -531,6 +532,82 @@ class RiskBudgetFilter(Filter):
         )
 
 
+class CycleFilter(Filter):
+    """Alignment with the Market Cycle Compass (``mfie.alpha``).
+
+    The cycle state answers a different question from every other filter: not
+    "is this trade sound right now" but "which way is the tide running over the
+    next quarter". A long in early recovery and the same long in late expansion
+    are not the same trade, however identical the chart looks.
+
+    Two hard stops, both of which exist because they are the errors that cost
+    real money rather than merely underperform:
+
+    * A long into ``CONTRACTION`` on a high-beta asset.
+    * A long into ``LATE_EXPANSION`` while the divergence flag is up — buying
+      the distribution phase, which is the single most expensive habit in
+      retail trading.
+    """
+
+    name = "market_cycle"
+    level = 1
+
+    def evaluate(self, signal: RawSignal, ctx: FilterContext) -> FilterOutcome:
+        domain = "crypto" if signal.instrument.is_crypto else "fx"
+        state = ctx.macro.cycle_states.get(domain)
+        if state is None:
+            return _outcome(self.name, 1.0, "Cycle compass unavailable")
+
+        detail = {
+            "phase": state.phase.value,
+            "score": state.score,
+            "momentum": state.momentum,
+            "confidence": state.confidence,
+            "divergence": state.divergence,
+            "transition_probability": state.transition_probability,
+            "days_in_phase": state.days_in_phase,
+        }
+        label = (
+            f"{state.phase.label} (score {state.score:+.2f}, momentum "
+            f"{state.momentum:+.2f}, confidence {state.confidence:.0%})"
+        )
+        is_long = signal.direction is Direction.LONG
+
+        # --- hard stops ---------------------------------------------------
+        if is_long and state.phase is CyclePhase.CONTRACTION and is_high_beta(signal.instrument):
+            return _outcome(
+                self.name, 0.0,
+                f"{label} — high-beta long into a contracting cycle, blocked",
+                detail, block=True,
+            )
+        if is_long and state.phase is CyclePhase.LATE_EXPANSION and state.divergence_flag:
+            return _outcome(
+                self.name, 0.0,
+                f"{label} — long into late-cycle distribution with price/internals "
+                f"divergence {state.divergence:+.2f} sd, blocked",
+                detail, block=True,
+            )
+
+        # --- graded alignment ---------------------------------------------
+        base = {
+            CyclePhase.EARLY_RECOVERY: 1.20 if is_long else 0.75,
+            CyclePhase.EXPANSION: 1.15 if is_long else 0.80,
+            CyclePhase.LATE_EXPANSION: 0.70 if is_long else 1.10,
+            CyclePhase.CONTRACTION: 0.55 if is_long else 1.15,
+            CyclePhase.NEUTRAL: 1.0,
+        }[state.phase]
+
+        # Scale the adjustment by how much the compass trusts itself. A
+        # 20%-confidence read should not move a position size much.
+        multiplier = 1.0 + (base - 1.0) * clamp(state.confidence, 0.0, 1.0)
+
+        if state.divergence_flag and is_long and state.divergence < 0:
+            multiplier *= 0.85
+            label += f"; bearish divergence {state.divergence:+.2f} sd"
+
+        return _outcome(self.name, multiplier, label, detail)
+
+
 class RegimeAlignmentFilter(Filter):
     """Down-weight strategies whose premise does not fit the current regime."""
 
@@ -585,6 +662,7 @@ class RegimeAlignmentFilter(Filter):
 DEFAULT_FILTERS: tuple[type[Filter], ...] = (
     EventBlockerFilter,     # cheapest hard block first
     MicrostructureFilter,   # second hard block: unexecutable is unexecutable
+    CycleFilter,
     LiquidityFilter,
     YieldCurveFilter,
     RealYieldFilter,

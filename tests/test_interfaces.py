@@ -101,5 +101,5 @@ class TestDashboard:
         app.run()
 
         assert not app.exception, [str(e.value) for e in app.exception]
-        assert len(app.tabs) == 5
+        assert len(app.tabs) == 6
         assert len(app.metric) > 0

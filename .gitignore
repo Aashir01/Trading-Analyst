@@ -1,8 +1,11 @@
 # Secrets — never commit
 .env
 
-# Local data, cached market history, trained models
-data/
+# Local data, cached market history, trained models.
+# The leading slash anchors this to the repository root. Without it the pattern
+# also matches `mfie/data/` — the entire ingestion package — which is exactly
+# what happened on the first commit here.
+/data/
 *.db
 *.db-wal
 *.db-shm

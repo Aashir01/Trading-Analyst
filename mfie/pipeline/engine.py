@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from mfie.alpha.cycle import get_cycle_engine
 from mfie.config import Params, get_params
 from mfie.core.types import (
     AssetClass,
@@ -114,6 +115,7 @@ class AnalysisEngine:
         self.params = params or get_params()
         self.strategies = strategies if strategies is not None else build_strategies()
         self.filters = filters if filters is not None else build_filters()
+        self.cycle_engine = get_cycle_engine(self.hub, self.params)
 
     # ------------------------------------------------------------------ macro
     @timed
@@ -141,6 +143,17 @@ class AnalysisEngine:
         currencies = {c for inst in instruments for c in (inst.base, inst.quote)}
         currencies &= set(TRACKED_CURRENCIES)
         reer_history = {c: hub.reer_series(c) for c in sorted(currencies)}
+
+        # Market Cycle Compass, built once per run for the domains actually in
+        # play. It is the slowest block here (daily history for a whole
+        # domain), so it is skipped entirely for domains with no instruments.
+        cycle_states: dict[str, object] = {}
+        domains = {"crypto" if inst.is_crypto else "fx" for inst in instruments}
+        for domain in sorted(domains):
+            try:
+                cycle_states[domain] = self.cycle_engine.evaluate(domain)
+            except Exception as exc:
+                log.warning("Cycle compass failed for %s: %s", domain, exc)
 
         fear_greed = hub.fear_greed()
         retail = {inst.symbol: hub.retail_positioning(inst) for inst in instruments}
@@ -187,6 +200,7 @@ class AnalysisEngine:
             retail_long_pct=retail,
             news_sentiment=news,
             events=events,
+            cycle_states=cycle_states,
             sources=dict(hub.sources),
         )
 
