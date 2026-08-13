@@ -21,6 +21,7 @@ from mfie.config import Params, get_params
 from mfie.core.types import Direction, FilterOutcome, RawSignal, ScoredSignal
 from mfie.core.utils import clamp
 from mfie.econ.risk import kelly_fraction, position_size, volatility_target_scalar
+from mfie.portfolio.calibration import prior_hit_rate
 
 
 @dataclass
@@ -126,7 +127,13 @@ def size_signal(
 
     # Kelly ceiling from the signal's own reward:risk and an assumed hit rate.
     rr = signal.reward_risk or risk_params.reward_risk_target
-    assumed_win_rate = win_rate if win_rate is not None else clamp(0.35 + 0.25 * confidence, 0.0, 0.75)
+    # The fallback is the *prior* from mfie.portfolio.calibration — the same
+    # curve, defined in one place. When realised trades exist, the portfolio
+    # layer re-applies this cap using the calibrated posterior instead, which
+    # is almost always the tighter of the two.
+    assumed_win_rate = (
+        win_rate if win_rate is not None else prior_hit_rate(confidence, p.calibration)
+    )
     kelly_cap = kelly_fraction(assumed_win_rate, rr, risk_params.kelly_fraction_cap)
     if kelly_cap <= 0:
         notes.append(

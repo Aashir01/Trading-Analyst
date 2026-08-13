@@ -310,6 +310,35 @@ class Repository:
                 sess.add(TradeRow(run_id=run_id, **t))
         return run_id
 
+    def closed_trades(self, limit: int = 5000, run_id: str | None = None) -> list[dict[str, Any]]:
+        """Realised trades, newest first — the input to hit-rate calibration."""
+        stmt = select(TradeRow).where(TradeRow.exit_ts.is_not(None))
+        if run_id:
+            stmt = stmt.where(TradeRow.run_id == run_id)
+        stmt = stmt.order_by(TradeRow.exit_ts.desc()).limit(limit)
+        with self.db.session() as sess:
+            records = sess.execute(stmt).scalars().all()
+        return [
+            {
+                "symbol": r.symbol,
+                "strategy": r.strategy,
+                "direction": r.direction,
+                "entry_price": r.entry_price,
+                "exit_price": r.exit_price,
+                "stop": r.stop,
+                "units": r.units,
+                "pnl": r.pnl,
+                "return_pct": r.return_pct,
+                "confidence": r.confidence,
+                "risk_fraction": r.risk_fraction,
+                "regime": r.regime,
+                "asset_class": r.asset_class,
+                "exit_reason": r.exit_reason,
+                "exit_ts": r.exit_ts,
+            }
+            for r in records
+        ]
+
     def save_equity_curve(self, run_id: str, equity: pd.Series, drawdown: pd.Series | None = None) -> int:
         if equity is None or equity.empty:
             return 0

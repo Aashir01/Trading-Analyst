@@ -7,11 +7,21 @@ liquidity, the yield curve, real interest-rate differentials, PPP valuation
 bands, the economic calendar, on-chain tokenomics, market microstructure,
 behavioural crowding, and a portfolio CVaR budget.
 
+Surviving that chain earns a signal an opinion, not capital. Before anything is
+sized, it must also clear its own **costs** in R, produce positive expected
+value at a **calibrated** hit rate rather than an assumed one, and then compete
+for room in a book whose risk is measured as `√(rᵀCr)` — so six correlated longs
+are counted as the single bet they are.
+
 Every output carries an audit trail. The tool never says "buy EURUSD"; it says
-*why*, and shows you which macro rule cut the size in half.
+*why*, and shows you which macro rule cut the size in half — and which
+correlation cut it in half again.
 
 ```
-Ingestion ─► Storage ─► Technical signal ─► Econometric filter chain ─► Risk sizing ─► Interface
+Ingestion ─► Storage ─► Technical signal ─► Econometric filter chain ─┐
+                                                                      ▼
+Interface ◄─ Portfolio allocation ◄─ Expected value ◄─ Risk sizing ◄──┘
+             (correlation-aware)      (costs + calibration)
 ```
 
 > **Analysis only — not financial advice.** Outputs are model estimates from
@@ -199,6 +209,8 @@ to trade than when to.
 | 4 | Behavioural | Cₜ = 1 − \|(%long−0.5)/0.5\|^k, plus Fear & Greed and news polarity |
 | 5 | Regime Alignment | Strategy family weighted by trending / ranging / crash regime |
 | 5 | Risk Budget | Portfolio CVaR₉₅ over budget ⇒ every new position scaled down |
+| 6 | **Expected Value** | E[R] = p(b−c) − (1−p)(1+c) at a calibrated *p*. Below the hurdle ⇒ block, with the breakeven hit rate quoted |
+| 7 | **Portfolio** | Correlation clustering, redundancy decay, per-cluster caps, and a budget on √(rᵀCr) |
 
 ### 6. Sizing
 
@@ -212,6 +224,122 @@ units        = equity × risk / stop distance
 Because risk is defined by the **stop distance**, widening a stop automatically
 shrinks the position. That invariant is what keeps the microstructure filter
 honest — and it is asserted in the test suite.
+
+### 6b. The capital allocation layer — costs, calibration, and the book
+
+Everything above this point judges **one trade at a time**. That leaves three
+holes, and each of them is a way to lose money while every filter says yes. The
+layer in [mfie/portfolio/](mfie/portfolio/) closes them; it runs as
+`python -m mfie portfolio`.
+
+**Hole 1 — costs were never priced.** The chain scored setups; nothing ever
+subtracted what a round trip costs. Costs are converted to **R**, multiples of
+the stop distance, because that is the only unit comparable to a 2R target:
+
+```
+c_R = (spread + 2·slippage + commission + carry) / |entry − stop|
+```
+
+The denominator is the point. Four basis points against a 3% stop is 0.02R and
+irrelevant; against a 0.15% stop it is 0.4R, and the breakeven hit rate on a 2R
+target moves from 33% to 47%. Two further details matter:
+
+* **Carry is signed.** A short perp in a positive-funding market is *collecting*,
+  and long the higher-yielding currency earns the differential. Treating that as
+  a cost throws away the oldest real edge in either market, so `carry` may be
+  negative and widen the trade's edge.
+* **Holding time comes from diffusion, not a guess.** Expected time to travel a
+  distance *D* with per-bar volatility σ scales as (D/σ)² — so a two-ATR stop is
+  a ~4-bar trade and a ten-ATR stop a ~100-bar one. That drives the funding accrual.
+
+**Hole 2 — the hit rate was invented.** Position size descends from Kelly,
+Kelly needs *p*, and *p* came from `0.35 + 0.25 × confidence`. A guess, never
+once checked against a realised trade, feeding the number that decides how much
+money is at stake. It is now the **prior** of a Beta-Binomial credibility model:
+
+```
+p ~ Beta(κp₀ + w, κ(1−p₀) + l)      E[p] = z·p̂ + (1−z)·p₀,   z = n/(n+κ)
+```
+
+The shrinkage is not bolted on — it falls out of the posterior mean. At κ=40, a
+strategy needs 40 trades before its own record outvotes the prior, so nine wins
+from ten proves nothing and is sized as if it proved nothing. Cells are
+hierarchical (`strategy × regime → strategy → prior`), so a thin cell inherits
+its parent rather than inventing a rate from three observations.
+
+**Sizing reads the posterior's lower tail, not its mean.** Two strategies both
+measuring 55% — one over 400 trades, one over 12 — get very different sizes,
+because the thin one's posterior is wide. Uncertainty shrinks the bet with no
+rule written to say so, which a point estimate cannot express at all. Kelly on a
+point estimate systematically overbets: estimation error is symmetric, but the
+cost of overbetting is not, because drawdowns compound geometrically.
+
+`python -m mfie calibrate` prints the check a confidence score has never had to
+pass — what actually happened at each confidence level, and a Brier skill score
+against the base rate. On the built-in synthetic data it reports **no skill**,
+correctly.
+
+**Hole 3 — portfolio heat is a count, not a measure.** Six crypto longs at 1%
+each sum to 6% and clear the cap. In a liquidation they are one bet and the book
+loses ~6% at once. The measure that knows the difference:
+
+```
+σ_book = √(rᵀ C r)        with   C̃ᵢⱼ = dᵢ dⱼ ρᵢⱼ
+```
+
+Signing by direction `d ∈ {+1,−1}` is what separates a risk model that
+understands a pairs trade from one that double-counts it: long BTC + long ETH is
+one bet, long BTC + **short** ETH is a spread whose risk is a fraction of either
+leg. Six perfectly correlated trades return 6% and the cap bites; six independent
+ones return 2.4% and the book is *allowed more risk* — which is the half that
+makes money rather than merely saving it. A fixed additive cap has to be set low
+enough to survive the worst case, so it under-allocates in every other case.
+
+Unknown correlation is set to **+0.35, not zero**. Assuming independence when
+the history is too short is the most expensive assumption in portfolio construction.
+
+The allocator then, in order: drops trades whose expected value does not clear
+its costs; clusters candidates on the HRP metric `d = √((1−ρ)/2)` with single
+linkage (risk contagion is transitive — if A moves with B and B with C, all three
+are one group); applies **redundancy decay**, so the *k*-th idea in a cluster
+keeps `1/(1 + kλ)` of its size; caps each cluster; and scales the whole book to a
+budget on `√(rᵀCr)`. Effective risk is homogeneous of degree 1 in the weights, so
+one uniform scale lands exactly on the budget with no iteration.
+
+| Question | Answered by | Where it bites |
+|---|---|---|
+| What does the round trip cost, in R? | `portfolio/costs.py` | Tight stops, wide spreads, funding |
+| What hit rate has this actually earned? | `portfolio/calibration.py` | Unproven strategies size smaller |
+| Does the arithmetic work after costs? | `portfolio/edge.py` | Positive-looking, negative-EV trades |
+| How much of this book is one bet? | `portfolio/construction.py` | Correlated clones, hedges |
+| What should the book hold? | `portfolio/allocator.py` | The final size, with reasons |
+
+Every resize carries its reason into the same audit trail as the filters, so a
+position that was cut says which step cut it and by how much.
+
+```bash
+python -m mfie portfolio --detail
+python -m mfie calibrate --symbol BTCUSDT --save
+```
+
+### 6c. Was the backtest real, or the best of many guesses?
+
+A Sharpe ratio with no multiple-testing correction attached is not a result. The
+project ships ten strategies and ~50 tunable thresholds; run them all, keep the
+best, and the winner's Sharpe estimates its edge *plus the maximum of fifty
+draws of noise*. Under the null, the expected best Sharpe across *N* trials is
+
+```
+E[max SR] ≈ √V[SR] · [ (1−γ)·Z⁻¹(1 − 1/N) + γ·Z⁻¹(1 − 1/(Ne)) ]
+```
+
+so twenty trials on a zero-skill strategy produce an expected best Sharpe near
+0.5 for free. `mfie/backtest/significance.py` reports the **Deflated Sharpe
+Ratio** — the probability the observed Sharpe survives that benchmark, given the
+sample's own skew and kurtosis. Negative skew and fat tails, the signature of
+every trend strategy, make a given Sharpe *less* impressive, not more. Every
+`PerformanceReport` now carries it, alongside the minimum track record length
+needed for significance, which is usually far longer than the backtest.
 
 ### 7. Backtesting
 
@@ -230,6 +358,8 @@ python -m mfie analyze  --class crypto --json          # machine-readable
 python -m mfie watch                                   # one line per instrument
 python -m mfie macro    --verbose                      # rates, curves, calendar
 python -m mfie cycle    --domain both --validate        # bull/bear cycle read
+python -m mfie portfolio --detail                      # correlation-aware allocation
+python -m mfie calibrate --symbol BTCUSDT --save       # is 'confidence' a probability?
 python -m mfie backtest EURUSD --bars 3000 --compare   # with vs without filters
 python -m mfie pairs    --class crypto                 # cointegration scan
 python -m mfie train    BTCUSDT --algorithm random_forest
@@ -259,12 +389,15 @@ mfie/
 ├── strategies/          The strategy library and its registry
 ├── ml/                  Feature engineering + walk-forward direction model
 ├── pipeline/            Filter chain, sizing, orchestration engine
-├── backtest/            Event-driven backtester and performance metrics
+├── portfolio/           costs · calibration · expected value · construction ·
+│                        allocator — the book-level decision
+├── backtest/            Event-driven backtester, metrics, significance tests
 ├── interfaces/          Report formatter, Streamlit dashboard, Telegram bot
 └── cli.py               Typer CLI
 
 config/params.yaml       Every econometric threshold, version-controlled
-tests/                   163 tests: formulas, causality, filter behaviour, risk, cycle
+tests/                   211 tests: formulas, causality, filter behaviour, risk,
+                         cycle, costs, calibration, allocation, significance
 ```
 
 ---
@@ -290,18 +423,49 @@ Two settings people usually want to change first:
 * `events.blackout_minutes_before/after` (default ±30) is aggressive. Widen it
   if you trade the majors; narrow it if you are explicitly trading releases.
 
+Three more that change how much capital moves:
+
+* `costs.commission_bps_per_side` (default 4 bps) must match **your** venue. It
+  is the single most under-set number in retail trading: too low and the
+  expected-value gate waves through trades that lose money slowly.
+* `calibration.prior_strength` (default κ=40) is how sceptical the engine is of
+  its own track record. Lower it only if you have years of trades and trust them.
+* `portfolio.max_effective_risk` (default 4.5%) budgets `√(rᵀCr)`, not the sum,
+  so it can safely exceed `risk.max_portfolio_risk` (6% additive). Correlated
+  risk is never larger than additive risk — that is the whole point of measuring
+  it. Set `portfolio.enabled: false` to go back to per-trade sizing only.
+
 ---
 
 ## Testing
 
 ```bash
-python -m pytest tests -q          # 163 tests, ~1m45s
+python -m pytest tests -q          # 211 tests
 ```
 
 The suite pins the mathematics (CVaR ≥ VaR, Kelly = p − (1−p)/b, RIRD
 antisymmetry, contrarian penalty symmetry), asserts **no lookahead** in the
 indicator layer by recomputing on truncated frames, and checks that each filter
 blocks what it is supposed to block.
+
+The allocation layer is tested as a set of statements about behaviour, because
+that is what the money depends on:
+
+* costs in R must double when the stop halves, and a short perp must *collect*
+  positive funding;
+* `E[R]` must be exactly zero at the breakeven hit rate — the two formulas are
+  derived independently and have to agree, or the gate rejects the wrong trades;
+* credibility must follow `z = n/(n+κ)` exactly, and a 12-trade cell must size
+  smaller than a 600-trade cell with the same sample mean;
+* two correlated longs must measure as ~one bet, a hedge as far less risk than
+  either leg, and risk contributions must sum to total book risk (Euler's
+  theorem — the decomposition is exact, and a fuzz test asserts effective risk
+  never exceeds additive heat across random long/short books);
+* clustering must be transitive, and two strategies on one instrument must not
+  pass as diversification;
+* units must be re-derived from the allocated risk, so the sizing invariant
+  survives the portfolio pass;
+* pure noise searched over 50 trials must **not** be reported as significant.
 
 ---
 
@@ -329,6 +493,25 @@ Stated plainly, because a tool that hides these is worse than no tool:
 * **The ML model is opt-in and self-rejecting.** If walk-forward accuracy does
   not beat the majority-class baseline by 2 points and AUC 0.53, it emits
   nothing. Most of the time, on most instruments, it should emit nothing.
+* **Calibration inherits its data's bias.** Fitted on backtest trades, it learns
+  the backtester's fill assumptions as much as the market's behaviour, and
+  survivorship in your own saved runs will flatter it. It is a measurement of
+  the system's realised record, not a forecast — and on synthetic data it
+  correctly reports no skill.
+* **Correlations are unstable and rise exactly when it hurts.** The allocator
+  measures the recent past; in a liquidation everything goes to 1.0 and the
+  measured diversification evaporates. The `default_correlation` prior for thin
+  pairs is pessimistic for this reason, but a correlation estimated over 250
+  calm bars will still overstate diversification in the week it matters.
+* **The cost model does not know your venue.** Tiered fees, maker rebates,
+  borrow costs, and market impact at size are all absent. Impact in particular
+  means the cost of a large position is understated, and it is understated worst
+  in exactly the illiquid instruments where the microstructure filter is already
+  nervous.
+* **Expected holding time is a diffusion approximation.** Real trades exit on
+  signals and time stops, not on first-passage of a driftless walk. It is right
+  in shape and wrong in detail, which is fine for accruing funding and would not
+  be fine for anything else.
 
 ---
 

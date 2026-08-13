@@ -159,6 +159,14 @@ class TradeRow(Base):
     return_pct: Mapped[float] = mapped_column(Float, default=0.0)
     exit_reason: Mapped[str] = mapped_column(String(24), default="")
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    # Needed to recover the R multiple (pnl / (units * |entry - stop|)) and to
+    # condition the hit-rate calibration on the regime the trade was born in.
+    # Additive columns: a database created by an earlier version lacks them,
+    # in which case the calibrator falls back to its prior rather than failing.
+    stop: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_fraction: Mapped[float] = mapped_column(Float, default=0.0)
+    regime: Mapped[str] = mapped_column(String(24), default="unknown")
+    asset_class: Mapped[str] = mapped_column(String(12), default="unknown")
 
 
 class EquityPoint(Base):

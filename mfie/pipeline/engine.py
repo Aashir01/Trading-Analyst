@@ -27,7 +27,7 @@ from mfie.core.types import (
     ScoredSignal,
 )
 from mfie.core.universe import TRACKED_CURRENCIES, resolve
-from mfie.core.utils import annualization_factor, get_logger, timed
+from mfie.core.utils import annualization_factor, get_logger, last_valid, timed
 from mfie.data.hub import DataHub, get_hub
 from mfie.econ.liquidity import compute_gli
 from mfie.econ.microstructure import compute_microstructure
@@ -38,6 +38,11 @@ from mfie.econ.tokenomics import compute_tokenomics
 from mfie.econ.valuation import compute_ppp_deviation
 from mfie.pipeline.filters import Filter, FilterContext, build_filters
 from mfie.pipeline.sizing import apply_sizing, size_signal
+from mfie.portfolio.allocator import PortfolioAllocator, PortfolioPlan, apply_plan
+from mfie.portfolio.calibration import ConfidenceCalibrator, load_calibrator
+from mfie.portfolio.construction import returns_matrix
+from mfie.portfolio.costs import estimate_costs
+from mfie.portfolio.edge import evaluate_edge
 from mfie.regime.detector import detect_regime
 from mfie.strategies.base import Strategy, StrategyContext
 from mfie.strategies.registry import build_strategies
@@ -74,6 +79,10 @@ class AnalysisResult:
     macro: MacroContext
     analyses: dict[str, InstrumentAnalysis] = field(default_factory=dict)
     timeframe: str = "1h"
+    # The book-level decision: which candidates survive together, and at what
+    # size once their correlations are accounted for. ``None`` when portfolio
+    # allocation is switched off in ``config/params.yaml``.
+    plan: PortfolioPlan | None = None
 
     @property
     def all_signals(self) -> list[ScoredSignal]:
@@ -100,6 +109,8 @@ class AnalysisResult:
             "gli_delta": self.macro.gli_delta,
             "fear_greed": self.macro.fear_greed,
             "portfolio_cvar": self.macro.portfolio_cvar,
+            "effective_risk": self.plan.effective_risk if self.plan else None,
+            "diversification_ratio": self.plan.diversification_ratio if self.plan else None,
         }
 
 
@@ -110,12 +121,19 @@ class AnalysisEngine:
         params: Params | None = None,
         strategies: list[Strategy] | None = None,
         filters: list[Filter] | None = None,
+        calibrator: ConfidenceCalibrator | None = None,
     ) -> None:
         self.hub = hub or get_hub()
         self.params = params or get_params()
         self.strategies = strategies if strategies is not None else build_strategies()
         self.filters = filters if filters is not None else build_filters()
         self.cycle_engine = get_cycle_engine(self.hub, self.params)
+        # Realised trades if the database holds any, otherwise the prior. Loaded
+        # once per engine so a run's sizing cannot drift mid-scan.
+        self.calibrator = calibrator if calibrator is not None else load_calibrator(
+            self.params.calibration
+        )
+        self.allocator = PortfolioAllocator(self.params)
 
     # ------------------------------------------------------------------ macro
     @timed
@@ -234,19 +252,49 @@ class AnalysisEngine:
                 frames[inst.symbol] = pd.DataFrame()
 
         result = AnalysisResult(ts=macro.ts, macro=macro, timeframe=timeframe)
+        portfolio_enabled = self.params.portfolio.enabled
         open_risk = 0.0
 
         for inst in instruments:
+            # With the portfolio pass active, per-signal sizing must not also
+            # apply a running heat cap: doing both would make each signal's
+            # size depend on where its instrument happened to fall in the scan
+            # order, and the portfolio layer owns heat anyway.
             analysis = self._analyse_instrument(
-                inst, frames, macro, timeframe, risk_budget, open_risk
+                inst, frames, macro, timeframe, risk_budget,
+                0.0 if portfolio_enabled else open_risk,
             )
             result.analyses[inst.symbol] = analysis
             best = analysis.best
             if best is not None:
                 open_risk += best.risk_fraction
 
-        macro.open_risk = open_risk
+        if portfolio_enabled:
+            result.plan = self._allocate(result, frames)
+            macro.open_risk = result.plan.gross_risk
+        else:
+            macro.open_risk = open_risk
         return result
+
+    # ------------------------------------------------------------- portfolio
+    def _allocate(
+        self,
+        result: AnalysisResult,
+        frames: dict[str, pd.DataFrame],
+    ) -> PortfolioPlan:
+        """Run the whole candidate set through correlation-aware allocation."""
+        candidates = [
+            (signal, signal.edge)
+            for signal in result.all_signals
+            if not signal.blocked and signal.risk_fraction > 0
+        ]
+        returns = returns_matrix(frames, self.params.portfolio.correlation_lookback)
+        plan = self.allocator.allocate(
+            candidates, returns, equity=self.params.risk.account_equity
+        )
+        plan.calibration_source = "trades" if self.calibrator.fitted else "prior"
+        plan.calibration_observations = self.calibrator.observations
+        return apply_plan(plan)
 
     # ----------------------------------------------------------- per instrument
     def _analyse_instrument(
@@ -306,6 +354,21 @@ class AnalysisEngine:
             risk_budget=risk_budget,
         )
 
+        extras = self._strategy_extras(instrument, frames, quote)
+        # The cost model needs the carry leg: perpetual funding for crypto, the
+        # nominal rate differential for FX. Both are already loaded; passing
+        # them through the filter context avoids fetching them twice.
+        funding = extras.get("funding_rate")
+        filter_ctx.extras.update(
+            {
+                # The hub serves funding as a history; the cost model wants the
+                # rate currently in force.
+                "funding_rate": last_valid(funding) if isinstance(funding, pd.Series) else funding,
+                "nominal_carry": getattr(rate_view, "nominal_carry", None),
+                "timeframe": timeframe,
+            }
+        )
+
         strategy_ctx = StrategyContext(
             instrument=instrument,
             df=df,
@@ -313,7 +376,7 @@ class AnalysisEngine:
             regime=regime,
             timeframe=timeframe,
             params=self.params,
-            extras=self._strategy_extras(instrument, frames, quote),
+            extras=extras,
         )
 
         analysis = InstrumentAnalysis(
@@ -455,7 +518,61 @@ class AnalysisEngine:
                 },
             )
         )
+
+        self._attach_edge(scored, filter_ctx, decision)
         return scored
+
+    def _attach_edge(self, scored: ScoredSignal, filter_ctx: FilterContext, decision) -> None:
+        """Price the round trip and test the trade's arithmetic.
+
+        This runs last because it needs the confidence the whole chain produced.
+        A signal that every macro rule liked can still fail here, and when it
+        does the reason carries the numbers: what it costs, what hit rate it
+        would need, and what the calibration actually measures.
+        """
+        raw = scored.raw
+        regime = filter_ctx.regime.regime.value if filter_ctx.regime else "unknown"
+        costs = estimate_costs(
+            raw,
+            quote=filter_ctx.quote,
+            atr=filter_ctx.atr,
+            timeframe=str(filter_ctx.extras.get("timeframe", "1h")),
+            funding_rate=filter_ctx.extras.get("funding_rate"),
+            rate_differential=filter_ctx.extras.get("nominal_carry"),
+            params=self.params.costs,
+            # Costs are measured against the stop the trade will actually use,
+            # which the microstructure filter may have widened.
+            stop_distance=abs(raw.entry - scored.adjusted_stop) or None,
+        )
+        hit_rate = self.calibrator.estimate(scored.confidence, raw.strategy, regime)
+        edge = evaluate_edge(
+            hit_rate,
+            raw.reward_risk or self.params.risk.reward_risk_target,
+            costs,
+            self.params,
+        )
+        scored.edge = edge
+
+        scored.outcomes.append(
+            FilterOutcome(
+                name="expected_value",
+                action=FilterAction.BLOCK if not edge.tradable else FilterAction.PASS,
+                multiplier=0.0 if not edge.tradable else 1.0,
+                reason=edge.reason,
+                detail={**edge.as_dict(), **costs.breakdown()},
+            )
+        )
+
+        if not edge.tradable and decision.risk_fraction > 0:
+            scored.blocked = True
+            scored.block_reasons.append(f"expected_value: {edge.reason}")
+            # A blocked signal must carry no size, whichever stage blocked it.
+            # Confidence is deliberately *kept*: it is what the macro chain
+            # concluded, and the contrast between a well-liked setup and its
+            # failing arithmetic is the most useful line in the audit trail.
+            scored.risk_fraction = 0.0
+            scored.size_fraction = 0.0
+            scored.units = 0.0
 
 
 def quick_analyze(

@@ -79,6 +79,11 @@ class Trade:
     exit_reason: str = ""
     costs: float = 0.0
     bars_held: int = 0
+    # Recorded so the calibrator can condition the hit rate on the state the
+    # market was actually in when the trade was opened, rather than pooling a
+    # trend strategy's ranging-market losses with its trending-market wins.
+    regime: str = "unknown"
+    asset_class: str = "unknown"
 
     @property
     def is_open(self) -> bool:
@@ -102,7 +107,23 @@ class Trade:
             "return_pct": self.return_pct,
             "exit_reason": self.exit_reason,
             "confidence": self.confidence,
+            "stop": self.stop,
+            "risk_fraction": self.risk_fraction,
+            "regime": self.regime,
+            "asset_class": self.asset_class,
         }
+
+    @property
+    def r_multiple(self) -> float:
+        """P&L in units of the risk taken.
+
+        The sizer defines risk as ``units x |entry - stop|``, so this needs no
+        knowledge of account equity at the time of entry — which is what makes
+        R multiples poolable across a growing or shrinking book.
+        """
+        from mfie.core.utils import safe_div
+
+        return safe_div(self.pnl, abs(self.units) * abs(self.entry_price - self.stop), 0.0)
 
 
 @dataclass
@@ -288,6 +309,8 @@ class BacktestEngine:
                 take_profit=best_decision.adjusted_take_profit,
                 confidence=best_decision.confidence,
                 risk_fraction=best_decision.risk_fraction,
+                regime=regime.regime.value if regime is not None else "unknown",
+                asset_class=instrument.asset_class.value,
             )
             open_trade.costs = self.costs.commission(open_trade.notional)
             signals_taken += 1

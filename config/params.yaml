@@ -89,6 +89,53 @@ risk:
   atr_stop_multiple: 2.0
   reward_risk_target: 2.0
 
+# ---------------------------------------------------------------------------
+# The capital allocation layer (mfie/portfolio).
+#
+# Three questions the filter chain cannot answer, because each needs to see
+# more than one trade at a time — or needs to see the account rather than the
+# chart: what does the round trip cost, what hit rate has this setup actually
+# earned, and how much of this book is secretly the same bet.
+# ---------------------------------------------------------------------------
+costs:
+  # Costs are converted to R (multiples of the stop distance) before anything
+  # uses them. A cost in basis points cannot be compared to a 2R target; the
+  # same 4 bps is noise on a wide stop and fatal on a tight one.
+  commission_bps_per_side: 4.0
+  slippage_atr_fraction: 0.05     # fraction of ATR conceded per side
+  min_spread_bps: 1.0             # floor when no top-of-book is available
+  funding_interval_hours: 8.0     # perpetual funding cadence
+  max_holding_bars: 400.0         # cap on the diffusion holding-time estimate
+  apply_carry: true               # signed: a paid carry widens the edge
+
+calibration:
+  # Beta-Binomial credibility. kappa is an equivalent sample size: at 40, a
+  # strategy needs 40 realised trades before its own record outweighs the
+  # prior. Lower it only if you have a lot of history and trust it.
+  prior_strength: 40.0
+  prior_base: 0.35                # p0 = base + slope * confidence, the old guess
+  prior_slope: 0.25
+  prior_floor: 0.20
+  prior_ceiling: 0.75
+  sizing_quantile: 0.25           # size on the posterior's lower tail, not its mean
+  min_cell_observations: 10       # thinner cells inherit their parent's estimate
+  reliability_buckets: 5
+
+portfolio:
+  enabled: true
+  min_expected_r: 0.05            # net of costs — below this, do not trade
+  cluster_threshold: 0.55         # above this correlation, one bet
+  correlation_lookback: 250
+  min_correlation_observations: 60
+  default_correlation: 0.35       # unknown correlation is positive, not zero
+  redundancy_decay: 1.0           # k-th idea in a cluster keeps 1/(1 + k*decay)
+  max_cluster_risk: 0.03          # per-cluster share of equity at risk
+  # Budget on sqrt(w' C w), not on the sum. It may safely exceed
+  # risk.max_portfolio_risk because correlated risk is never larger than
+  # additive risk — that is the whole point of measuring it.
+  max_effective_risk: 0.045
+  max_positions: 12
+
 technical:
   rsi_period: 14
   macd_fast: 12

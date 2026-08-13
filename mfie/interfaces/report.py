@@ -119,6 +119,70 @@ def format_signal(signal: ScoredSignal, show_audit: bool = True) -> str:
     return "\n".join(lines)
 
 
+def format_portfolio_plan(plan, show_detail: bool = True) -> str:
+    """Render the book-level decision.
+
+    The headline is the pair of numbers ``gross`` and ``effective``. When they
+    are close the book is one bet under several names; when effective risk is
+    far below gross, the diversification is real and the budget can carry it.
+    """
+    if plan is None:
+        return ""
+
+    held = plan.held
+    lines = ["PORTFOLIO ALLOCATION"]
+
+    if plan.book is not None:
+        lines.append(f"  {plan.book.describe()}")
+    lines.append(
+        f"  Requested {plan.gross_requested:.2%} additive -> allocated "
+        f"{plan.gross_risk:.2%} gross / {plan.effective_risk:.2%} correlated"
+    )
+    lines.append(
+        f"  Hit rate from {plan.calibration_source} "
+        f"({plan.calibration_observations} realised trades); "
+        f"book expected value {plan.expected_r:+.2f}R per unit of risk"
+    )
+
+    for note in plan.notes:
+        lines.append(f"  * {note}")
+
+    if held:
+        lines.append("")
+        lines.append(
+            f"  {'INSTRUMENT':<12}{'DIR':<6}{'STRATEGY':<22}"
+            f"{'STANDALONE':>11}{'ALLOCATED':>11}{'OF BOOK':>9}  CLUSTER"
+        )
+        for allocation in sorted(held, key=lambda a: a.risk_fraction, reverse=True):
+            signal = allocation.signal
+            lines.append(
+                f"  {signal.instrument.name:<12}{_ARROW[signal.direction]:<6}"
+                f"{signal.raw.strategy:<22}"
+                f"{allocation.standalone_risk:>10.2%} {allocation.risk_fraction:>10.2%} "
+                f"{allocation.risk_contribution:>8.0%}  #{allocation.cluster}"
+            )
+            if show_detail:
+                for reason in allocation.reasons:
+                    lines.append(f"      - {reason}")
+                if allocation.edge is not None:
+                    lines.append(f"      - {allocation.edge.describe()}")
+    else:
+        lines.append("  No position survived allocation.")
+
+    dropped = plan.dropped
+    if dropped and show_detail:
+        lines.append("")
+        lines.append("  DROPPED BY THE PORTFOLIO LAYER")
+        for allocation in dropped:
+            reason = allocation.reasons[0] if allocation.reasons else "no reason recorded"
+            lines.append(
+                f"    {allocation.signal.instrument.name:<12}"
+                f"{allocation.signal.raw.strategy:<22}{reason}"
+            )
+
+    return "\n".join(lines)
+
+
 def format_result(result, show_audit: bool = True, include_blocked: bool = True) -> str:
     """Render a whole ``AnalysisResult``."""
     parts = [format_macro_brief(result.macro, verbose=True), ""]
@@ -138,6 +202,11 @@ def format_result(result, show_audit: bool = True, include_blocked: bool = True)
             parts.append("")
     else:
         parts.append("  No signal cleared the filter chain with a tradable size.")
+        parts.append("")
+
+    plan = getattr(result, "plan", None)
+    if plan is not None and plan.allocations:
+        parts.append(format_portfolio_plan(plan, show_detail=show_audit))
         parts.append("")
 
     # Signals that no rule vetoed but that sized to nothing. Without this

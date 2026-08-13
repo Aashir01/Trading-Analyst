@@ -2,9 +2,9 @@
 
     python -m mfie dashboard        (or: streamlit run mfie/interfaces/dashboard.py)
 
-Six tabs: Signals, Cycle, Macro, Charts, Backtest, Data sources. Every chart
-carries a legend or title naming its series and a matching table view, so
-nothing depends on colour alone.
+Seven tabs: Signals, Portfolio, Cycle, Macro, Charts, Backtest, Data sources.
+Every chart carries a legend or title naming its series and a matching table
+view, so nothing depends on colour alone.
 """
 
 from __future__ import annotations
@@ -182,6 +182,94 @@ def filter_impact_chart(signal) -> go.Figure:
     layout["hovermode"] = "closest"
     layout["xaxis"]["zeroline"] = True
     layout["xaxis"]["zerolinecolor"] = PALETTE.axis
+    fig.update_layout(**{k: v for k, v in layout.items() if v is not None})
+    return fig
+
+
+def allocation_chart(plan) -> go.Figure:
+    """Standalone size against allocated size, position by position.
+
+    The gap between the two bars is the entire argument for the portfolio
+    layer: it is the risk that per-trade sizing was willing to take and that
+    the book, seeing the correlations, was not.
+    """
+    held = plan.held
+    if not held:
+        return go.Figure()
+
+    ordered = sorted(held, key=lambda a: a.risk_fraction, reverse=True)
+    names = [f"{a.signal.instrument.name} · {a.signal.raw.strategy}" for a in ordered]
+    standalone = [a.standalone_risk * 100 for a in ordered]
+    allocated = [a.risk_fraction * 100 for a in ordered]
+    reasons = ["; ".join(a.reasons) or "full size held" for a in ordered]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=standalone, y=names, orientation="h", name="Standalone size",
+            marker=dict(color=PALETTE.ink_muted, line=dict(color=PALETTE.surface, width=2)),
+            hovertemplate="<b>%{y}</b><br>standalone %{x:.2f}% of equity<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            x=allocated, y=names, orientation="h", name="Allocated size",
+            marker=dict(color=PALETTE.diverging_high, line=dict(color=PALETTE.surface, width=2)),
+            customdata=reasons,
+            hovertemplate="<b>%{y}</b><br>allocated %{x:.2f}% of equity<br>"
+                          "%{customdata}<extra></extra>",
+        )
+    )
+    layout = base_layout(PALETTE, height=max(260, 42 * len(ordered)),
+                         title="Standalone size vs portfolio allocation (% of equity at risk)")
+    layout["barmode"] = "overlay"
+    layout["hovermode"] = "closest"
+    fig.update_layout(**{k: v for k, v in layout.items() if v is not None})
+    fig.update_traces(opacity=0.85)
+    return fig
+
+
+def risk_contribution_chart(plan) -> go.Figure:
+    """Share of book risk per position, coloured by cluster.
+
+    A position whose contribution far exceeds its size is where the book is
+    quietly concentrated — the row worth arguing about.
+    """
+    held = plan.held
+    if not held:
+        return go.Figure()
+
+    ordered = sorted(held, key=lambda a: a.risk_contribution, reverse=True)
+    # Cluster ids are arbitrary integers, so they are mapped onto categorical
+    # slots by order of appearance. Past the palette's last slot everything
+    # falls back to one muted colour rather than silently reusing a hue that
+    # already means a different cluster.
+    slots: dict[int, str] = {}
+    for allocation in ordered:
+        if allocation.cluster not in slots:
+            index = len(slots)
+            slots[allocation.cluster] = (
+                PALETTE.series(index) if index < len(PALETTE.categorical) else PALETTE.ink_muted
+            )
+    colours = [slots[a.cluster] for a in ordered]
+
+    fig = go.Figure(
+        go.Bar(
+            x=[a.risk_contribution * 100 for a in ordered],
+            y=[f"{a.signal.instrument.name} · {a.signal.raw.strategy}" for a in ordered],
+            orientation="h",
+            marker=dict(color=colours, line=dict(color=PALETTE.surface, width=2)),
+            customdata=[a.cluster for a in ordered],
+            hovertemplate="<b>%{y}</b><br>%{x:.0f}% of book risk<br>"
+                          "cluster #%{customdata}<extra></extra>",
+            text=[f"{a.risk_contribution:.0%}" for a in ordered],
+            textposition="outside",
+            textfont=dict(color=PALETTE.ink_secondary, size=11),
+        )
+    )
+    layout = base_layout(PALETTE, height=max(240, 38 * len(ordered)),
+                         title="Share of total book risk (bars sharing a colour are one cluster)")
+    layout["showlegend"] = False
     fig.update_layout(**{k: v for k, v in layout.items() if v is not None})
     return fig
 
@@ -429,6 +517,111 @@ def tab_signals(result) -> None:
             width="stretch",
             hide_index=True,
         )
+
+
+def tab_portfolio(result) -> None:
+    """What the book can carry once correlations are counted."""
+    plan = getattr(result, "plan", None)
+    if plan is None:
+        st.info(
+            "Portfolio allocation is switched off "
+            "(`portfolio.enabled: false` in config/params.yaml)."
+        )
+        return
+    if not plan.allocations:
+        st.info("No candidate reached the portfolio layer on this scan.")
+        return
+
+    cols = st.columns(4)
+    cols[0].metric(
+        "Additive heat", f"{plan.gross_risk:.2%}",
+        f"{plan.gross_requested:.2%} requested",
+    )
+    cols[1].metric(
+        "Correlated risk", f"{plan.effective_risk:.2%}",
+        f"budget {get_params().portfolio.max_effective_risk:.2%}",
+    )
+    cols[2].metric(
+        "Diversification", f"{plan.diversification_ratio:.2f}x",
+        f"{len({a.cluster for a in plan.held})} clusters",
+    )
+    cols[3].metric(
+        "Book expected value", f"{plan.expected_r:+.2f}R",
+        f"hit rate from {plan.calibration_source}",
+    )
+
+    if plan.diversification_ratio < 1.2 and plan.held:
+        st.warning(
+            "Diversification below 1.2x: these positions are close to being one "
+            "trade under several names. Additive heat would not have said so."
+        )
+
+    for note in plan.notes:
+        st.caption(note)
+
+    st.divider()
+    if plan.held:
+        st.plotly_chart(allocation_chart(plan), width="stretch")
+        st.plotly_chart(risk_contribution_chart(plan), width="stretch")
+
+        st.subheader("Positions")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Symbol": a.signal.instrument.name,
+                        "Direction": a.signal.direction.value,
+                        "Strategy": a.signal.raw.strategy,
+                        "Standalone": a.standalone_risk,
+                        "Allocated": a.risk_fraction,
+                        "Kept": a.scale,
+                        "Of book risk": a.risk_contribution,
+                        "Cluster": a.cluster,
+                        "E[R]": a.edge.expected_r if a.edge else None,
+                        "Cost (R)": a.edge.cost_r if a.edge else None,
+                        "Breakeven": a.edge.breakeven_hit_rate if a.edge else None,
+                        "Why resized": "; ".join(a.reasons) or "full size held",
+                    }
+                    for a in sorted(plan.held, key=lambda x: x.risk_fraction, reverse=True)
+                ]
+            ).style.format(
+                {
+                    "Standalone": "{:.2%}", "Allocated": "{:.2%}", "Kept": "{:.2f}x",
+                    "Of book risk": "{:.0%}", "Breakeven": "{:.0%}",
+                    "E[R]": "{:+.3f}", "Cost (R)": "{:.3f}",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No position survived allocation.")
+
+    dropped = plan.dropped
+    if dropped:
+        st.subheader("Dropped by the portfolio layer")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Symbol": a.signal.instrument.name,
+                        "Direction": a.signal.direction.value,
+                        "Strategy": a.signal.raw.strategy,
+                        "Wanted": a.standalone_risk,
+                        "Reason": a.reasons[0] if a.reasons else "no reason recorded",
+                    }
+                    for a in dropped
+                ]
+            ).style.format({"Wanted": "{:.2%}"}),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.caption(
+        "Correlated risk is sqrt(w' C w) with correlations signed by trade "
+        "direction, so hedges net off and duplicated views do not. The gap "
+        "between it and additive heat is the risk per-trade sizing cannot see."
+    )
 
 
 def tab_macro(result) -> None:
@@ -753,18 +946,22 @@ def main() -> None:
     with st.spinner("Building macro context and scanning..."):
         result = run_analysis(config["symbols"], config["timeframe"], config["limit"])
 
-    tabs = st.tabs(["Signals", "Cycle", "Macro", "Charts", "Backtest", "Data sources"])
+    tabs = st.tabs(
+        ["Signals", "Portfolio", "Cycle", "Macro", "Charts", "Backtest", "Data sources"]
+    )
     with tabs[0]:
         tab_signals(result)
     with tabs[1]:
-        tab_cycle(result)
+        tab_portfolio(result)
     with tabs[2]:
-        tab_macro(result)
+        tab_cycle(result)
     with tabs[3]:
-        tab_charts(result, config)
+        tab_macro(result)
     with tabs[4]:
-        tab_backtest(config)
+        tab_charts(result, config)
     with tabs[5]:
+        tab_backtest(config)
+    with tabs[6]:
         tab_sources(result)
 
     st.divider()

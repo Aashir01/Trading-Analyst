@@ -101,5 +101,8 @@ class TestDashboard:
         app.run()
 
         assert not app.exception, [str(e.value) for e in app.exception]
-        assert len(app.tabs) == 6
+        labels = [tab.label for tab in app.tabs]
+        assert labels == [
+            "Signals", "Portfolio", "Cycle", "Macro", "Charts", "Backtest", "Data sources"
+        ]
         assert len(app.metric) > 0

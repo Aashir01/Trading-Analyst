@@ -61,6 +61,13 @@ class PerformanceReport:
     signals_taken: int = 0
     block_reasons: dict[str, int] = field(default_factory=dict)
 
+    # Statistical significance, after correcting for how many things were tried.
+    # A Sharpe with no multiple-testing correction attached is not a result.
+    psr: float = 0.0
+    deflated_sharpe: float = 0.0
+    trials_assumed: int = 1
+    significance_verdict: str = "INSUFFICIENT DATA"
+
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
@@ -78,12 +85,24 @@ class PerformanceReport:
             f"Win rate          {self.win_rate:>10.2%}",
             f"Profit factor     {self.profit_factor:>10.2f}",
             f"Expectancy        {self.expectancy:>10.4f}",
+            f"Deflated Sharpe   {self.deflated_sharpe:>10.2%}  ({self.trials_assumed} trials)",
+            f"Significance      {self.significance_verdict}",
             f"Signals gen/blk/taken {self.signals_generated}/{self.signals_blocked}/{self.signals_taken}",
         ]
 
 
-def evaluate_performance(result, periods_per_year: float | None = None) -> PerformanceReport:
-    """Build a report from a ``BacktestResult``."""
+def evaluate_performance(
+    result,
+    periods_per_year: float | None = None,
+    trials: int | None = None,
+) -> PerformanceReport:
+    """Build a report from a ``BacktestResult``.
+
+    ``trials`` is the number of configurations tried before this result was
+    selected. It defaults to the size of the strategy library, because running
+    ten strategies and reporting the best of them *is* ten trials whether or
+    not the search felt like one.
+    """
     equity = pd.Series(result.equity).dropna()
     returns = pd.Series(result.returns).dropna()
     ppy = periods_per_year or annualization_factor(getattr(result, "timeframe", "1h"))
@@ -117,6 +136,19 @@ def evaluate_performance(result, periods_per_year: float | None = None) -> Perfo
         report.var_95 = value_at_risk(tail_source, 0.95)
         report.cvar_95 = conditional_value_at_risk(tail_source, 0.95)
 
+        # Multiple-testing correction. Deliberately computed on every report
+        # rather than offered as an option: an uncorrected Sharpe next to a
+        # corrected one is the comparison that changes people's minds.
+        from mfie.backtest.significance import assess_significance
+
+        if trials is None:
+            trials = len(getattr(result, "strategy_names", []) or []) or _default_trials()
+        significance = assess_significance(returns, trials=trials, periods_per_year=ppy)
+        report.psr = significance.psr
+        report.deflated_sharpe = significance.dsr
+        report.trials_assumed = significance.trials
+        report.significance_verdict = significance.verdict
+
     closed = [t for t in getattr(result, "trades", []) if getattr(t, "exit_ts", None) is not None]
     report.trades = len(closed)
     if closed:
@@ -141,6 +173,16 @@ def evaluate_performance(result, periods_per_year: float | None = None) -> Perfo
         report.exit_breakdown = breakdown
 
     return report
+
+
+def _default_trials() -> int:
+    """How many strategies the library holds — the minimum honest trial count."""
+    try:
+        from mfie.strategies.registry import REGISTRY
+
+        return max(len(REGISTRY), 1)
+    except Exception:
+        return 1
 
 
 def daily_returns(equity: pd.Series) -> pd.Series:

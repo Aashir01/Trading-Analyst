@@ -307,13 +307,36 @@ class TestEngine:
             assert signal.verdict in ("STRONG", "MODERATE", "WEAK", "BLOCKED")
 
     def test_blocked_signals_carry_no_size(self):
+        """Whichever stage blocks a signal, it must end up with no position.
+
+        Confidence is not asserted to be zero. A filter-chain veto zeroes it,
+        but the expected-value gate and the portfolio layer both run *after*
+        confidence is known and deliberately keep it — "the macro chain liked
+        this at 71% and the arithmetic still rejected it" is the most
+        informative line the audit trail can produce, and zeroing the number
+        would erase it.
+        """
         from mfie.pipeline.engine import AnalysisEngine
 
         result = AnalysisEngine().run(symbols=["BTCUSDT", "SOLUSDT", "EURUSD"], limit=400)
         for signal in result.blocked:
-            assert signal.confidence == 0.0
             assert signal.units == 0.0
+            assert signal.risk_fraction == 0.0
+            assert signal.size_fraction == 0.0
             assert signal.block_reasons
+
+    def test_late_stage_blocks_keep_their_confidence(self):
+        """A trade rejected on cost arithmetic still records what the chain thought."""
+        from mfie.pipeline.engine import AnalysisEngine
+
+        result = AnalysisEngine().run(symbols=["BTCUSDT", "SOLUSDT", "EURUSD"], limit=400)
+        late = [
+            s for s in result.blocked
+            if any(r.startswith(("expected_value", "portfolio")) for r in s.block_reasons)
+        ]
+        for signal in late:
+            assert signal.confidence > 0.0
+            assert signal.edge is not None
 
     def test_macro_snapshot_is_shared_across_instruments(self):
         from mfie.pipeline.engine import AnalysisEngine

@@ -213,6 +213,82 @@ class RiskParams:
 
 
 @dataclass
+class CostParams:
+    """What a round trip actually costs, before any of it reaches the sizer.
+
+    Costs are converted into *R* — multiples of the stop distance — because
+    that is the only unit in which they are comparable to the reward:risk of
+    the trade. A 4 bps round trip is trivial on a 3% stop and fatal on a 0.1%
+    one, and only the R form says so.
+    """
+
+    commission_bps_per_side: float = 4.0    # taker fee, basis points of notional
+    slippage_atr_fraction: float = 0.05     # fraction of ATR conceded per side
+    min_spread_bps: float = 1.0             # floor when the book is unavailable
+    # Perpetual funding is charged every 8h; FX carry accrues daily.
+    funding_interval_hours: float = 8.0
+    # Cap on the diffusion estimate of holding time, in bars. Without it, a
+    # signal with a stop 30 ATRs away implies a 900-bar hold and an absurd
+    # carry charge.
+    max_holding_bars: float = 400.0
+    apply_carry: bool = True
+
+
+@dataclass
+class CalibrationParams:
+    """Beta-Binomial credibility for the hit rate.
+
+    ``prior_strength`` is an equivalent sample size: at kappa=40, a cell needs
+    40 trades before the data outweighs the prior. That is deliberately slow.
+    A strategy with nine wins out of ten has not proved anything, and a sizer
+    that believes it will bet the account.
+    """
+
+    prior_strength: float = 40.0            # kappa, in equivalent observations
+    prior_base: float = 0.35                # p0 = base + slope * confidence
+    prior_slope: float = 0.25
+    prior_floor: float = 0.20
+    prior_ceiling: float = 0.75
+    # Sizing uses this quantile of the posterior, not its mean. Uncertainty
+    # therefore shrinks positions automatically.
+    sizing_quantile: float = 0.25
+    min_cell_observations: int = 10         # below this, fall back to the parent cell
+    reliability_buckets: int = 5
+
+
+@dataclass
+class PortfolioParams:
+    """Correlation-aware capital allocation across the whole candidate set.
+
+    The additive heat cap in ``RiskParams`` treats six correlated crypto longs
+    as six independent 1% risks. They are one 6% bet. This layer measures the
+    book's risk as sqrt(w' C w) with *signed* correlations, so hedges net off
+    and clones do not.
+    """
+
+    enabled: bool = True
+    # Minimum net expected value, in R, for a trade to be worth taking.
+    min_expected_r: float = 0.05
+    # Correlation distance below which two candidates are one bet.
+    cluster_threshold: float = 0.55
+    correlation_lookback: int = 250
+    min_correlation_observations: int = 60
+    # Assumed pairwise correlation when there is not enough overlapping
+    # history. Pessimistic on purpose: unknown correlation is not zero.
+    default_correlation: float = 0.35
+    # The k-th best signal inside a cluster keeps 1/(1 + k*decay) of its size.
+    # The second confirmation of a view you already hold is worth much less
+    # than the first.
+    redundancy_decay: float = 1.0
+    max_cluster_risk: float = 0.03          # fraction of equity, per cluster
+    # The diversified budget. Because effective heat <= additive heat, this can
+    # safely exceed RiskParams.max_portfolio_risk: genuinely uncorrelated books
+    # are allowed to carry more gross risk, which is where the extra return is.
+    max_effective_risk: float = 0.045
+    max_positions: int = 12
+
+
+@dataclass
 class TechnicalParams:
     rsi_period: int = 14
     macd_fast: int = 12
@@ -311,6 +387,9 @@ class Params:
     behavioral: BehavioralParams = field(default_factory=BehavioralParams)
     events: EventParams = field(default_factory=EventParams)
     risk: RiskParams = field(default_factory=RiskParams)
+    costs: CostParams = field(default_factory=CostParams)
+    calibration: CalibrationParams = field(default_factory=CalibrationParams)
+    portfolio: PortfolioParams = field(default_factory=PortfolioParams)
     technical: TechnicalParams = field(default_factory=TechnicalParams)
     regime: RegimeParams = field(default_factory=RegimeParams)
     cycle: CycleParams = field(default_factory=CycleParams)

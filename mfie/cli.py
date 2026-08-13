@@ -282,6 +282,163 @@ def backtest(
 
 
 @app.command()
+def portfolio(
+    symbols: str | None = typer.Option(None, "--symbols", "-s"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t"),
+    limit: int = typer.Option(500, "--limit", "-l"),
+    asset_class: str | None = typer.Option(None, "--class", "-c", help="crypto | forex"),
+    detail: bool = typer.Option(True, "--detail/--no-detail",
+                                help="Show why each position was resized"),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Allocate capital across the whole candidate set, correlations included.
+
+    ``analyze`` sizes each signal on its own merits. This shows what the *book*
+    can actually carry: which candidates are the same bet, which are dropped
+    because their expected value does not survive costs, and how far the
+    additive heat number overstates the risk being run.
+    """
+    from mfie.interfaces.report import format_portfolio_plan
+    from mfie.pipeline.engine import AnalysisEngine
+
+    engine = AnalysisEngine()
+    if not engine.params.portfolio.enabled:
+        console.print(
+            "[yellow]Portfolio allocation is disabled in config/params.yaml "
+            "(portfolio.enabled: false).[/yellow]"
+        )
+        raise typer.Exit(code=1)
+
+    with console.status("Scoring candidates and allocating capital..."):
+        result = engine.run(
+            symbols=_parse_symbols(symbols),
+            timeframe=timeframe,
+            limit=limit,
+            asset_class=_asset_class(asset_class),
+        )
+
+    plan = result.plan
+    if plan is None or not plan.allocations:
+        console.print("No candidate reached the portfolio layer.")
+        return
+
+    if as_json:
+        payload = {
+            "summary": plan.summary(),
+            "positions": [
+                {
+                    "symbol": a.symbol,
+                    "direction": a.signal.direction.value,
+                    "strategy": a.signal.raw.strategy,
+                    "standalone_risk": a.standalone_risk,
+                    "allocated_risk": a.risk_fraction,
+                    "units": a.units,
+                    "cluster": a.cluster,
+                    "risk_contribution": a.risk_contribution,
+                    "dropped": a.dropped,
+                    "reasons": a.reasons,
+                    "edge": a.edge.as_dict() if a.edge else None,
+                }
+                for a in plan.allocations
+            ],
+        }
+        console.print_json(json.dumps(payload, default=str))
+        return
+
+    console.print(format_portfolio_plan(plan, show_detail=detail))
+
+
+@app.command()
+def calibrate(
+    symbol: str | None = typer.Option(None, "--symbol", "-s",
+                                      help="Backtest this instrument to generate trades"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t"),
+    bars: int = typer.Option(3000, "--bars", "-b"),
+    save: bool = typer.Option(False, "--save", help="Persist the trades for future runs"),
+) -> None:
+    """Measure whether the confidence score means anything.
+
+    With ``--symbol`` it backtests that instrument and calibrates on the
+    resulting trades. Without it, it reads whatever realised trades the
+    database already holds. Either way the reliability table is the output that
+    matters: it shows what actually happened at each confidence level, which is
+    the check a confidence score never otherwise has to pass.
+    """
+    from mfie.portfolio.calibration import (
+        ConfidenceCalibrator,
+        load_calibrator,
+        records_from_backtest,
+    )
+
+    if symbol:
+        from mfie.backtest.engine import BacktestEngine
+        from mfie.data.hub import get_hub
+        from mfie.pipeline.engine import AnalysisEngine
+
+        instrument = get_instrument(symbol)
+        hub = get_hub()
+        df = hub.ohlcv(instrument, timeframe, bars)
+        macro_context = AnalysisEngine(hub=hub).build_macro_context([instrument])
+        with console.status(f"Backtesting {instrument.name} over {len(df)} bars..."):
+            result = BacktestEngine().run(instrument, df, macro_context)
+        calibrator = ConfidenceCalibrator().fit(records_from_backtest(result))
+
+        if hub.sources.get(f"ohlcv:{instrument.symbol}") == "synthetic":
+            console.print(
+                "[yellow]Price data is synthetic: this calibrates the engine "
+                "against a random process, which is a code path test, not a "
+                "measurement of edge.[/yellow]\n"
+            )
+        if save:
+            from mfie.storage.repo import Repository
+
+            repo = Repository()
+            run_id = repo.save_trades([t.as_row() for t in result.closed_trades], result.run_id)
+            console.print(f"[green]Saved run {run_id}.[/green]")
+    else:
+        calibrator = load_calibrator()
+
+    summary = calibrator.summary()
+    if not calibrator.fitted:
+        console.print(
+            "No realised trades available — the engine is running on its prior "
+            "(0.35 + 0.25 x confidence). Run `mfie calibrate --symbol BTCUSDT --save` "
+            "or `mfie backtest <symbol> --save` to give it something to learn from."
+        )
+        return
+
+    table = Table(title=f"Reliability over {summary['observations']} realised trades")
+    for column in ("Confidence", "Forecast", "Realised", "Trades", "Avg R"):
+        table.add_column(column, justify="right")
+    for _, row in calibrator.reliability_table().iterrows():
+        table.add_row(
+            str(row["confidence_range"]),
+            f"{row['forecast']:.0%}",
+            f"{row['realised']:.0%}",
+            f"{int(row['trades'])}",
+            f"{row['avg_r']:+.2f}",
+        )
+    console.print(table)
+
+    skill = summary["skill"]
+    verdict = (
+        "the confidence score carries information"
+        if skill > 0.01
+        else "the confidence score is not beating its own base rate — "
+             "treat it as an ordering, not a probability"
+    )
+    console.print(
+        f"\nBrier {summary['brier']:.4f} vs base rate {summary['brier_baseline']:.4f} "
+        f"(skill {skill:+.3f}) — {verdict}."
+    )
+
+    strategies = calibrator.strategy_table()
+    if not strategies.empty:
+        console.print("\nPer-strategy posteriors (shrunk toward the pooled rate):")
+        console.print(strategies.to_string(index=False, float_format=lambda x: f"{x:,.3f}"))
+
+
+@app.command()
 def pairs(
     asset_class: str = typer.Option("crypto", "--class", "-c", help="crypto | forex"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t"),

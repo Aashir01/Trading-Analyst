@@ -279,6 +279,10 @@ class ScoredSignal:
     blocked: bool = False
     block_reasons: list[str] = field(default_factory=list)
     macro: MacroContext | None = None
+    # The net expected-value case for this trade (``mfie.portfolio.edge``).
+    # Typed as Any to keep mfie.core free of a dependency on mfie.portfolio,
+    # the same arrangement used for ``MacroContext.cycle_states``.
+    edge: Any = None
 
     @property
     def instrument(self) -> Instrument:
