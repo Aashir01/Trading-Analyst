@@ -22,6 +22,8 @@ dependencies = [
     "requests>=2.31",
     "rich>=13.0",
     "typer>=0.9",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
     "streamlit>=1.50",
     "plotly>=5.18",
 ]
@@ -30,14 +32,20 @@ dependencies = [
 postgres = ["psycopg2-binary>=2.9"]
 telegram = ["python-telegram-bot>=21.0"]
 nlp = ["transformers>=4.38", "torch>=2.2"]
-api = ["fastapi>=0.110", "uvicorn>=0.27"]
-dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.3"]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.3", "httpx>=0.27"]
 
 [project.scripts]
 mfie = "mfie.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mfie*"]
+
+# mfie/web holds the frontend. It is not a Python package (no __init__.py), so
+# packages.find will not pick it up and an installed wheel would serve a 404 at
+# "/" while the API worked perfectly — a confusing failure worth preventing.
+[tool.setuptools.package-data]
+mfie = ["web/*.html", "web/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

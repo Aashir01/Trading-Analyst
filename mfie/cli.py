@@ -640,12 +640,64 @@ def init_db_command() -> None:
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", "-h",
+                             help="Bind address. Use 0.0.0.0 to expose on the network."),
+    port: int = typer.Option(8000, "--port", "-p"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (development)"),
+    workers: int = typer.Option(1, "--workers", "-w",
+                                help="Worker processes. Each keeps its own cache and engine."),
+) -> None:
+    """Serve the web interface and JSON API.
+
+    This is the production interface: one process serves both the app at ``/``
+    and the API under ``/api``. There is no build step and no second server.
+
+    Binding to 0.0.0.0 exposes the interface to your whole network. There is no
+    authentication in front of it, so put it behind a reverse proxy with auth,
+    or a VPN, before doing that on anything but a trusted LAN.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]uvicorn is not installed.[/red] Install the web extra:\n"
+            "  pip install 'mfie[api]'   (or: pip install fastapi 'uvicorn[standard]')"
+        )
+        raise typer.Exit(code=1) from None
+
+    if host == "0.0.0.0":  # noqa: S104 - deliberate, and warned about
+        console.print(
+            "[yellow]Binding to 0.0.0.0: the interface will be reachable from your "
+            "network with no authentication in front of it.[/yellow]"
+        )
+
+    console.print(f"MFIE on [cyan]http://{'localhost' if host in {'127.0.0.1', '0.0.0.0'} else host}:{port}[/cyan]")
+    console.print(f"API docs at [cyan]http://localhost:{port}/api/docs[/cyan]\n")
+
+    # Workers require an import string rather than an app object, and reload is
+    # incompatible with multiple workers in uvicorn.
+    uvicorn.run(
+        "mfie.api:app",
+        host=host,
+        port=port,
+        reload=reload,
+        workers=None if reload else (workers if workers > 1 else None),
+        log_level="info",
+    )
+
+
+@app.command()
 def dashboard(
     port: int = typer.Option(8501, "--port", "-p"),
 ) -> None:
-    """Launch the Streamlit dashboard."""
+    """Launch the legacy Streamlit dashboard (superseded by `serve`)."""
+    console.print(
+        "[yellow]`dashboard` is the old Streamlit prototype. `mfie serve` is the "
+        "current interface — faster, deployable, and no Streamlit dependency.[/yellow]"
+    )
     script = Path(__file__).parent / "interfaces" / "dashboard.py"
-    console.print(f"Starting dashboard on http://localhost:{port} ...")
+    console.print(f"Starting Streamlit dashboard on http://localhost:{port} ...")
     subprocess.run(
         [sys.executable, "-m", "streamlit", "run", str(script), "--server.port", str(port)],
         check=False,

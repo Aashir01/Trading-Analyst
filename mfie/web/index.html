@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="MFIE — macro-informed Forex and Crypto analysis. Technical setups scored against liquidity, rates, valuation and a correlation-aware risk budget.">
+  <meta name="robots" content="noindex, nofollow">
+  <title>MFIE — Macro-Informed Financial Intelligence</title>
+
+  <!-- Inline, before stylesheets, so the correct theme paints on the first
+       frame. Reading the preference after CSS loads produces a white flash on
+       every navigation for anyone using the dark theme. -->
+  <script>
+    (function () {
+      try {
+        var prefs = JSON.parse(localStorage.getItem("mfie.prefs.v1") || "{}");
+        if (prefs.theme) {
+          document.documentElement.setAttribute("data-theme", prefs.theme);
+        } else {
+          document.documentElement.removeAttribute("data-theme");
+        }
+      } catch (e) {
+        /* Storage blocked; fall through to the OS preference. */
+      }
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fonts are progressive enhancement. The stacks in tokens.css fall back to
+       system faces, so a machine with no network still renders correctly — the
+       same property the engine itself has. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+  <noscript>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+  </noscript>
+
+  <link rel="stylesheet" href="/assets/tokens.css">
+  <link rel="stylesheet" href="/assets/app.css">
+
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2338bdf8'/><path d='M7 22V10l5 7 5-7v12' stroke='%23041420' stroke-width='2.5' fill='none' stroke-linejoin='round' stroke-linecap='round'/><path d='M22 10v12' stroke='%23041420' stroke-width='2.5' stroke-linecap='round'/></svg>">
+</head>
+<body>
+  <noscript>
+    <div style="padding:2rem;max-width:60ch;margin:0 auto;font-family:system-ui,sans-serif">
+      <h1 style="font-size:1.25rem">JavaScript is required</h1>
+      <p style="color:#a8b1c0;line-height:1.6">
+        This interface renders charts and tables in the browser from the JSON API.
+        With scripting disabled, the API is still fully usable directly —
+        <code>/api/analysis</code>, <code>/api/portfolio</code>,
+        <code>/api/macro</code> — and the command line
+        (<code>python -m mfie analyze</code>) produces the same analysis as text.
+      </p>
+    </div>
+  </noscript>
+
+  <script type="module" src="/assets/main.js"></script>
+</body>
+</html>

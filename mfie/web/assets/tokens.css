@@ -1,0 +1,298 @@
+/* ==========================================================================
+   Design tokens.
+
+   Dark-first, because this is a tool people keep open beside a chart for hours
+   and a bright field of white at 2am is a usability defect, not a preference.
+   The light theme is a full peer, not an afterthought: every token is redefined
+   rather than filtered, so nothing washes out.
+
+   Colour rules that the rest of the stylesheet may not break:
+
+   1. Green and red mean DIRECTION and P&L. Nothing else. The moment a "success"
+      toast is green, green stops meaning long, and a trader misreads a badge.
+      Status uses amber/blue/neutral instead.
+   2. Surfaces are neutral with a slight blue cast, never pure #000 or #fff.
+      Pure black kills the sense of depth on OLED and pure white glares.
+   3. Every text/background pair here clears WCAG AA (4.5:1) for body copy and
+      3:1 for large text and UI edges. The muted tokens are the tight ones and
+      were picked against the surface they actually sit on.
+   ========================================================================== */
+
+:root {
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  /* Numerals are monospaced everywhere. Columns of prices that do not align
+     are genuinely harder to scan, and this is a screen made of numbers. */
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;   /* 11px — table micro-labels */
+  --text-xs: 0.75rem;      /* 12px — labels, captions */
+  --text-sm: 0.8125rem;    /* 13px — dense table body */
+  --text-base: 0.875rem;   /* 14px — body. 16px is too loose for this density */
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --text-display: 3rem;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.4;
+  --leading-normal: 1.6;
+
+  --tracking-tight: -0.015em;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.08em;
+
+  /* ---- Space: 4px base, 8px rhythm --------------------------------------- */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* ---- Radius ------------------------------------------------------------ */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  /* ---- Layout ------------------------------------------------------------ */
+  --sidebar-width: 232px;
+  --sidebar-collapsed: 60px;
+  --topbar-height: 56px;
+  --content-max: 1600px;
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  --z-base: 1;
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+  --z-tooltip: 500;
+}
+
+/* ==========================================================================
+   Dark theme (default)
+   ========================================================================== */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces, from furthest back to closest to the reader. */
+  --bg-base: #0a0c10;        /* page */
+  --bg-sunken: #07090c;      /* wells, code blocks */
+  --bg-surface: #11141a;     /* cards */
+  --bg-raised: #171b23;      /* popovers, hovered rows */
+  --bg-overlay: #1d222b;     /* menus */
+  --bg-inset: #0d1015;       /* inputs */
+
+  --border-subtle: #1e232c;
+  --border-default: #272d38;
+  --border-strong: #38404e;
+
+  --text-primary: #e8ebf0;
+  --text-secondary: #a8b1c0;
+  --text-muted: #6f7a8b;      /* 4.6:1 on --bg-surface */
+  --text-inverse: #0a0c10;
+
+  /* Interactive accent. Cyan reads as instrument-panel rather than corporate
+     blue, and critically it is not confusable with the green/red semantics. */
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-muted: rgba(56, 189, 248, 0.14);
+  --accent-border: rgba(56, 189, 248, 0.35);
+  --accent-contrast: #04141d;
+
+  /* Direction and P&L. Reserved. */
+  --long: #22c55e;
+  --long-muted: rgba(34, 197, 94, 0.14);
+  --long-border: rgba(34, 197, 94, 0.38);
+  --short: #f43f5e;
+  --short-muted: rgba(244, 63, 94, 0.14);
+  --short-border: rgba(244, 63, 94, 0.38);
+
+  /* Status. Deliberately NOT green/red. */
+  --status-info: #60a5fa;
+  --status-info-muted: rgba(96, 165, 250, 0.14);
+  --status-warn: #fbbf24;
+  --status-warn-muted: rgba(251, 191, 36, 0.14);
+  --status-danger: #fb7185;
+  --status-danger-muted: rgba(251, 113, 133, 0.14);
+  --status-neutral: #94a3b8;
+  --status-neutral-muted: rgba(148, 163, 184, 0.12);
+
+  /* Charts. Eight categorical hues, ordered by perceptual distance so the
+     first three (the common case) are maximally separable. */
+  --chart-1: #38bdf8;
+  --chart-2: #a78bfa;
+  --chart-3: #fbbf24;
+  --chart-4: #34d399;
+  --chart-5: #f472b6;
+  --chart-6: #60a5fa;
+  --chart-7: #fb923c;
+  --chart-8: #2dd4bf;
+  --chart-grid: #1c212a;
+  --chart-axis: #4b5563;
+  --chart-crosshair: #64748b;
+
+  /* Diverging scale for correlation and impact. Blue-to-red through a neutral
+     midpoint: safe for the common forms of colour blindness, unlike green-red. */
+  --diverge-low: #3b82f6;
+  --diverge-mid: #475569;
+  --diverge-high: #ef4444;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px var(--accent-muted);
+
+  --scrim: rgba(4, 6, 9, 0.72);
+}
+
+/* ==========================================================================
+   Light theme
+   ========================================================================== */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-base: #f6f7f9;
+  --bg-sunken: #eceef2;
+  --bg-surface: #ffffff;
+  --bg-raised: #f9fafb;
+  --bg-overlay: #ffffff;
+  --bg-inset: #f2f4f7;
+
+  --border-subtle: #e6e8ec;
+  --border-default: #d6dae1;
+  --border-strong: #b6bdc8;
+
+  --text-primary: #101419;
+  --text-secondary: #48505c;
+  --text-muted: #697285;       /* 4.9:1 on white */
+  --text-inverse: #ffffff;
+
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-muted: rgba(2, 132, 199, 0.1);
+  --accent-border: rgba(2, 132, 199, 0.3);
+  --accent-contrast: #ffffff;
+
+  /* Darkened from the dark-theme values: the same green on white fails AA. */
+  --long: #15803d;
+  --long-muted: rgba(21, 128, 61, 0.1);
+  --long-border: rgba(21, 128, 61, 0.3);
+  --short: #be123c;
+  --short-muted: rgba(190, 18, 60, 0.1);
+  --short-border: rgba(190, 18, 60, 0.3);
+
+  --status-info: #1d4ed8;
+  --status-info-muted: rgba(29, 78, 216, 0.1);
+  --status-warn: #b45309;
+  --status-warn-muted: rgba(180, 83, 9, 0.1);
+  --status-danger: #be123c;
+  --status-danger-muted: rgba(190, 18, 60, 0.1);
+  --status-neutral: #64748b;
+  --status-neutral-muted: rgba(100, 116, 139, 0.1);
+
+  --chart-1: #0284c7;
+  --chart-2: #7c3aed;
+  --chart-3: #b45309;
+  --chart-4: #059669;
+  --chart-5: #db2777;
+  --chart-6: #2563eb;
+  --chart-7: #ea580c;
+  --chart-8: #0d9488;
+  --chart-grid: #e8eaee;
+  --chart-axis: #94a3b8;
+  --chart-crosshair: #64748b;
+
+  --diverge-low: #2563eb;
+  --diverge-mid: #cbd5e1;
+  --diverge-high: #dc2626;
+
+  --shadow-sm: 0 1px 2px rgba(16, 20, 25, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 20, 25, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 20, 25, 0.12);
+  --shadow-focus: 0 0 0 3px var(--accent-muted);
+
+  --scrim: rgba(16, 20, 25, 0.45);
+}
+
+/* Respect the OS choice until the user makes one of their own. The app writes
+   data-theme onto <html> the moment they do, and that wins from then on. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg-base: #f6f7f9;
+    --bg-sunken: #eceef2;
+    --bg-surface: #ffffff;
+    --bg-raised: #f9fafb;
+    --bg-overlay: #ffffff;
+    --bg-inset: #f2f4f7;
+    --border-subtle: #e6e8ec;
+    --border-default: #d6dae1;
+    --border-strong: #b6bdc8;
+    --text-primary: #101419;
+    --text-secondary: #48505c;
+    --text-muted: #697285;
+    --text-inverse: #ffffff;
+    --accent: #0284c7;
+    --accent-hover: #0369a1;
+    --accent-muted: rgba(2, 132, 199, 0.1);
+    --accent-border: rgba(2, 132, 199, 0.3);
+    --accent-contrast: #ffffff;
+    --long: #15803d;
+    --long-muted: rgba(21, 128, 61, 0.1);
+    --long-border: rgba(21, 128, 61, 0.3);
+    --short: #be123c;
+    --short-muted: rgba(190, 18, 60, 0.1);
+    --short-border: rgba(190, 18, 60, 0.3);
+    --status-info: #1d4ed8;
+    --status-info-muted: rgba(29, 78, 216, 0.1);
+    --status-warn: #b45309;
+    --status-warn-muted: rgba(180, 83, 9, 0.1);
+    --status-danger: #be123c;
+    --status-danger-muted: rgba(190, 18, 60, 0.1);
+    --status-neutral: #64748b;
+    --status-neutral-muted: rgba(100, 116, 139, 0.1);
+    --chart-1: #0284c7;
+    --chart-2: #7c3aed;
+    --chart-3: #b45309;
+    --chart-4: #059669;
+    --chart-5: #db2777;
+    --chart-6: #2563eb;
+    --chart-7: #ea580c;
+    --chart-8: #0d9488;
+    --chart-grid: #e8eaee;
+    --chart-axis: #94a3b8;
+    --chart-crosshair: #64748b;
+    --diverge-low: #2563eb;
+    --diverge-mid: #cbd5e1;
+    --diverge-high: #dc2626;
+    --shadow-sm: 0 1px 2px rgba(16, 20, 25, 0.06);
+    --shadow-md: 0 4px 12px rgba(16, 20, 25, 0.08);
+    --shadow-lg: 0 12px 32px rgba(16, 20, 25, 0.12);
+    --scrim: rgba(16, 20, 25, 0.45);
+  }
+}

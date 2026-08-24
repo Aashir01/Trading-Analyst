@@ -20,11 +20,17 @@ rich>=13.0
 typer>=0.9
 
 # --- Interfaces ---
+# The web app: one process serves the JSON API and the frontend. The frontend
+# is plain HTML/CSS/JS with hand-rolled SVG charts, so there is deliberately no
+# Node toolchain, no bundler and no CDN dependency here — `mfie serve` is the
+# whole deployment.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# Legacy Streamlit prototype, kept so `mfie dashboard` still runs. Superseded
+# by `mfie serve`; safe to drop if you never use it.
 streamlit>=1.50
 plotly>=5.18
-# Optional: REST API
-# fastapi>=0.110
-# uvicorn>=0.27
 # Optional: Telegram alerts
 # python-telegram-bot>=21.0
 

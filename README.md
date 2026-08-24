@@ -20,8 +20,8 @@ correlation cut it in half again.
 ```
 Ingestion ─► Storage ─► Technical signal ─► Econometric filter chain ─┐
                                                                       ▼
-Interface ◄─ Portfolio allocation ◄─ Expected value ◄─ Risk sizing ◄──┘
-             (correlation-aware)      (costs + calibration)
+   Web app + JSON API ◄─ Portfolio allocation ◄─ Expected value ◄─ Sizing
+   CLI · Telegram          (correlation-aware)    (costs + calibration)
 ```
 
 > **Analysis only — not financial advice.** Outputs are model estimates from
@@ -39,13 +39,13 @@ pip install -r requirements.txt
 
 python -m mfie doctor                             # what is configured
 python -m mfie analyze --symbols BTCUSDT,EURUSD   # scored, filtered signals
-python -m mfie dashboard                          # Streamlit UI on :8501
+python -m mfie serve                              # web app on :8000
 ```
 
 It runs immediately with **no API keys**. Missing providers fall back to a
 deterministic synthetic generator so the whole pipeline is explorable offline —
-and the dashboard's *Data sources* tab always tells you which blocks were real
-and which were simulated.
+and the app's *Diagnostics* view always tells you which blocks were real and
+which were simulated.
 
 To go live, copy `.env.example` to `.env` and fill in whatever you have. The
 single most valuable key is **FRED** (free): it powers the real-yield
@@ -348,6 +348,87 @@ slippage, and the pessimistic assumption that a stop fills before a target when
 one bar spans both. `--compare` runs the same strategies with and without the
 macro chain, which is the experiment that justifies the filters existing at all.
 
+### 8. The interface
+
+```bash
+python -m mfie serve                       # http://localhost:8000
+python -m mfie serve --host 0.0.0.0 -w 4   # exposed, four workers
+```
+
+One process serves the JSON API under `/api` and the web app at `/`. Seven
+views — Overview, Signals, Portfolio, Cycle, Macro, Instruments, Diagnostics —
+each built around the same hierarchy the engine argues in: **what the book is
+doing, then why, then the evidence**. Every number is one click from the
+reasoning that produced it, because the audit trail is the product.
+
+**No build step, and no CDN.** The frontend is plain HTML, CSS and ES modules,
+with the charts hand-written as SVG — candlesticks with overlays, the filter
+waterfall, the correlation heatmap, the cycle dial. There is no npm install, no
+bundler, and nothing to compile before deploying. That is the same reasoning
+that keeps TA-Lib out of the dependency list: a Python quant project should not
+need a Node toolchain to show you a chart, and a 400KB charting library to draw
+six shapes is a poor trade. Fonts are the single optional external request and
+degrade to system faces, so an air-gapped box renders correctly.
+
+A few decisions worth knowing about:
+
+* **Every panel states its own age.** The engine sits behind a
+  stale-while-revalidate cache — an expired scan is served immediately while a
+  refresh runs behind it — so a number with no age attached would be read as
+  live when it usually is not. The sidebar shows `Live · 40s ago`, or
+  `Simulated` when every block is synthetic.
+* **Green and red mean direction and P&L. Nothing else.** Status uses amber and
+  blue, because the moment a "success" toast is green, green stops meaning long.
+* **Numerals are tabular everywhere**, so columns of prices actually align.
+* **Dark-first, with a real light theme** — both palettes clear WCAG AA, and the
+  correlation heatmap uses a blue-to-red diverging scale rather than green-red,
+  which is unreadable for the most common colour-vision deficiencies.
+* Keyboard: `1`–`7` switch views, `r` refreshes, `t` toggles theme.
+
+The API is usable on its own — `/api/analysis`, `/api/portfolio`, `/api/macro`,
+`/api/cycle/{domain}`, `/api/instrument/{symbol}` — with OpenAPI docs at
+`/api/docs`. Payloads carry numbers, never pre-formatted strings, so the same
+endpoints serve a notebook as well as they serve this interface.
+
+> `python -m mfie dashboard` still launches the original Streamlit prototype.
+> It is superseded by `serve` and kept only so existing habits do not break.
+
+---
+
+## Deployment
+
+```bash
+docker compose up -d                      # SQLite, nothing else needed
+docker compose --profile postgres up -d   # with TimescaleDB
+```
+
+The image is a two-stage build (the C toolchain that compiles numpy and scipy
+does not ship in the runtime layer), runs as a non-root user, and healthchecks
+against `/api/health` — which deliberately does not touch the engine, because a
+healthcheck that triggered a macro rebuild would fail its own timeout.
+
+Without Docker:
+
+```bash
+pip install -r requirements.txt
+python -m mfie serve --host 0.0.0.0 --port 8000 --workers 4
+```
+
+Things worth getting right before this faces anyone else:
+
+* **There is no authentication.** None. Put it behind a reverse proxy with auth,
+  or a VPN. `--host 0.0.0.0` exposes it to your whole network and says so.
+* **Mount a volume at `/app/data`.** It holds the SQLite database, ingested
+  history and realised trades. Lose it and hit-rate calibration resets to its
+  prior, silently — sizing gets worse and nothing announces it.
+* **Each worker keeps its own engine and cache.** Four workers means four
+  independent macro snapshots and four times the upstream API calls. Scale
+  workers for concurrent *readers*, not for speed.
+* **Set your own `commission_bps_per_side`.** The default 4 bps is a guess about
+  your venue, and the expected-value gate is built on it.
+* Behind a proxy, the container already passes `--proxy-headers`; make sure the
+  proxy sets `X-Forwarded-Proto` or generated links will use the wrong scheme.
+
 ---
 
 ## Command reference
@@ -367,7 +448,8 @@ python -m mfie ingest   --symbols BTCUSDT,ETHUSDT      # persist to the database
 python -m mfie strategies                              # list the library
 python -m mfie doctor                                  # config & connectivity
 python -m mfie init-db                                 # create schema / hypertables
-python -m mfie dashboard --port 8501
+python -m mfie serve    --port 8000 --workers 4        # web app + JSON API
+python -m mfie dashboard --port 8501                   # legacy Streamlit UI
 python -m mfie bot      --interval 900                 # Telegram alerts
 ```
 
@@ -392,12 +474,17 @@ mfie/
 ├── portfolio/           costs · calibration · expected value · construction ·
 │                        allocator — the book-level decision
 ├── backtest/            Event-driven backtester, metrics, significance tests
-├── interfaces/          Report formatter, Streamlit dashboard, Telegram bot
+├── api/                 FastAPI app, serialisers, cached engine service
+├── web/                 The frontend: index.html + assets/ (no build step)
+│   └── assets/          tokens.css · app.css · core.js · charts.js · views.js
+├── interfaces/          Report formatter, Telegram bot, legacy Streamlit app
 └── cli.py               Typer CLI
 
 config/params.yaml       Every econometric threshold, version-controlled
-tests/                   211 tests: formulas, causality, filter behaviour, risk,
-                         cycle, costs, calibration, allocation, significance
+Dockerfile               Two-stage, non-root, healthchecked
+docker-compose.yml       SQLite by default; TimescaleDB behind a profile
+tests/                   245 tests: formulas, causality, filter behaviour, risk,
+                         cycle, costs, calibration, allocation, significance, API
 ```
 
 ---
@@ -512,6 +599,13 @@ Stated plainly, because a tool that hides these is worse than no tool:
   signals and time stops, not on first-passage of a driftless walk. It is right
   in shape and wrong in detail, which is fine for accruing funding and would not
   be fine for anything else.
+* **The web app ships no authentication and no rate limiting.** It is built to
+  sit behind something that has both. Exposing it directly gives anyone who can
+  reach the port your full analysis and the ability to force expensive
+  recomputations.
+* **Backtests are not exposed over HTTP.** A single run takes minutes and would
+  block a worker for the duration, so the API deliberately has no endpoint for
+  it. Use `python -m mfie backtest`.
 
 ---
 
